@@ -148,10 +148,11 @@ Partially Ordered Monotonic Regression".
 # GPAV (returns blocks) — with verbose tracing
 # ---------------------------------------------------------------------
 
+# GPAV algorithm
 def gpav(
     Y: np.ndarray,
     poset,
-    topo_order: Optional[List] = None,   # list of node labels
+    order: Optional[List] = None,   # list of node labels
     weights: Optional[np.ndarray] = None,
     *,
     verbose: bool = False,
@@ -168,15 +169,16 @@ FOR JVIONOTONIC REGRESSION".
       elem_to_block : LOCAL element index -> final block id
     """
     G = _hasse_graph(poset)
-    nodes = list(G.nodes())
-    n = len(nodes)
-    node_to_idx = {v: i for i, v in enumerate(nodes)}
+    N = list(G.nodes())
+    n = len(N)
+    node_to_idx = {v: i for i, v in enumerate(N)}
+    idx_to_node = dict(enumerate(N))
 
     # Align Y
     Y = np.asarray(Y)
     if Y.shape[0] != n:
         try:
-            Y = np.array([Y[v] for v in nodes], dtype=float)
+            Y = np.array([Y[v] for v in N], dtype=float)
         except Exception as e:
             raise ValueError("Y must align with poset node labels or Hasse node order.") from e
     else:
@@ -189,124 +191,130 @@ FOR JVIONOTONIC REGRESSION".
         weights = np.asarray(weights)
         if weights.shape[0] != n:
             try:
-                w = np.array([weights[v] for v in nodes], dtype=float)
+                w = np.array([weights[v] for v in N], dtype=float)
             except Exception as e:
                 raise ValueError("weights must align with poset node labels or Hasse node order.") from e
         else:
             w = weights.astype(float, copy=False)
 
     # Topological order (labels) -> local indices
-    if topo_order is None:
+    if order is None:
         topo_labels = list(nx.topological_sort(G))
     else:
-        topo_labels = list(topo_order)
+        topo_labels = list(order)
     topo = [node_to_idx[v] for v in topo_labels]
 
-    # Precompute local predecessors
-    preds = {i: [node_to_idx[u] for u in G.predecessors(nodes[i])] for i in range(n)}
+    # Dictionary of (immediate) children
+    children = {i: [node_to_idx[u] for u in G.predecessors(N[i])] for i in range(n)}
 
     if verbose:
         print(indent + f"== {name}: starting ==")
         _print_hasse(G, title=f"{name} input Hasse", indent=indent)
         print(indent + f"Node order used: {topo_labels}")
-        print(indent + f"Y aligned to nodes: {[(nodes[i], float(Y[i])) for i in range(n)]}")
+        print(indent + f"Y aligned to nodes: {[(N[i], float(Y[i])) for i in range(n)]}")
         if weights is not None:
-            print(indent + f"Weights aligned: {[(nodes[i], float(w[i])) for i in range(n)]}")
+            print(indent + f"Weights aligned: {[(N[i], float(w[i])) for i in range(n)]}")
         print(indent + "----")
 
     # Initialize
     blocks: Dict[int, Dict] = {}
-    head_of = {i: i for i in range(n)}  # element -> current head
+    current_block_of = {i: i for i in range(n)}  # element -> current head
 
     # Sweep
-    for j in topo:
+    for k in topo: # change j to k
         # Create singleton block for j
-        blocks[j] = {
-            'elements': [j],
-            'weight': float(w[j]),
-            'value': float(Y[j]),
-            'pred_heads': set(),
+        blocks[k] = {
+            'elements': [k],
+            'weight': float(w[k]),
+            'value': float(Y[k]),
+            'children_k': set(),
         }
 
         # Heads of predecessor blocks that still exist
-        pred_heads = set()
-        for p in preds[j]:
-            h = head_of[p]
+        B_k_minus = set()
+        for p in children[k]:
+            h = current_block_of[p]
             if h in blocks:
-                pred_heads.add(h)
+                B_k_minus.add(h) # Children of k that are blocks = B_k_minus
 
         if verbose:
-            print(indent + f"Visit node {nodes[j]!r}: start block {{ {nodes[j]!r} }} "
-                  f"(val={Y[j]:.6g}, w={w[j]:.6g}); pred_heads={[nodes[h] for h in pred_heads]}")
+            print(indent + f"Visit node {N[k]!r}: start block {{ {N[k]!r} }} "
+                  f"(val={Y[k]:.6g}, w={w[k]:.6g}); B_k_minus={[N[h] for h in B_k_minus]}")
 
         # Merge as long as a predecessor block has larger value (violations)
-        while pred_heads:
-            violators = [h for h in pred_heads if blocks[h]['value'] > blocks[j]['value']]
+        while B_k_minus:
+            B_k_minus = {h for h in B_k_minus if h in blocks}
+            violators = [h for h in B_k_minus if blocks[h]['value'] > blocks[k]['value']]
             if not violators:
                 break
             # pick max-value violator
-            h_star = max(violators, key=lambda h: blocks[h]['value'])
+            j = max(violators, key=lambda h: blocks[h]['value'])
 
-            bj = blocks[j]
-            bh = blocks[h_star]
-            old_val_j = bj['value']
-            old_val_h = bh['value']
+            B_k = blocks[k]
+            B_j = blocks[j]
+            U_k = B_k['value']
+            U_j = B_j['value']
 
-            new_w = bj['weight'] + bh['weight']
-            new_val = (bj['weight'] * bj['value'] + bh['weight'] * bh['value']) / new_w
-            new_elems = bh['elements'] + bj['elements']
+            new_w = B_k['weight'] + B_j['weight']
+            new_val = (B_k['weight'] * B_k['value'] + B_j['weight'] * B_j['value']) / new_w
+            new_elems = B_j['elements'] + B_k['elements'] # B_k=B_k U B_j
 
             if verbose:
-                print(indent + f"  Merge due to violation: head {nodes[h_star]!r} (val={old_val_h:.6g})"
-                      f" into head {nodes[j]!r} (val={old_val_j:.6g})"
-                      f" -> new_val={new_val:.6g}, new_w={new_w:.6g}, elems={[nodes[e] for e in new_elems]}")
+                print(indent + f"  Merge due to violation: head {N[j]!r} (val={U_j:.6g})"
+                      f" into head {N[j]!r} (val={U_k:.6g})"
+                      f" -> new_val={new_val:.6g}, new_w={new_w:.6g}, elems={[N[e] for e in new_elems]}")
 
-            # Update current block j
-            bj['elements'] = new_elems
-            bj['weight'] = new_w
-            bj['value'] = new_val
+            # Update current block
+            B_k['elements'] = new_elems
+            B_k['weight'] = new_w
+            B_k['value'] = new_val
 
             # Remap merged elements to head j
-            for e in bh['elements']:
-                head_of[e] = j
+            for e in B_j['elements']:
+                current_block_of[e] = k # For the most problematic child, we change its parent to k
 
-            # Update predecessor heads of j: (Bj^- ∪ Bh^-) \ {h_star}
-            pred_heads |= bh.get('pred_heads', set())
-            if h_star in pred_heads:
-                pred_heads.remove(h_star)
+            # Update predecessor heads of j: (B_j_minus ∪ B_k_minus) \ {j}
+            # Take children of j and make them children of k, IF they are blocks
+            B_k_minus |= {h for h in B_j.get('children_k', set()) if h in blocks}
 
-            # Remove merged block
-            del blocks[h_star]
+            if j in B_k_minus:
+                B_k_minus.remove(j) # taking out {j}
+
+            # Remove merged block B_j-
+            del blocks[j]  # but other blocks can make reference to this deleted one
 
             if verbose:
-                _print_blocks_state(blocks, nodes, indent=indent + "    ")
+                _print_blocks_state(blocks, N, indent=indent + "    ")
 
-        # Keep only existing heads
-        blocks[j]['pred_heads'] = set(h for h in pred_heads if h in blocks)
+        # Keep only existing heads (if part is for safety)
+        blocks[k]['children_k'] = set(h for h in B_k_minus if h in blocks)
 
     # Assemble outputs (LOCAL indexing 0..n-1)
     u = np.zeros(n, dtype=float)
     block_list: List[Dict] = []
     elem_to_block = np.empty(n, dtype=int)
 
-    for head, b in blocks.items():
+    for head, b in blocks.items(): # b are the elements of the dictionary; head, the index
         b_id = len(block_list)
         block_list.append({
             'elements': list(b['elements']),
+            'labels': [idx_to_node[x] for x in b['elements']],
             'weight': float(b['weight']),
             'value': float(b['value']),
-        })
+        }) # We copy the blocks without the children
         for e in b['elements']:
             u[e] = b['value']
             elem_to_block[e] = b_id
+
+    transl = {N[i]: float(u[i]) for i in range(n)}
 
     if verbose:
         print(indent + f"== {name}: finished ==")
         print(indent + "Final blocks:")
         for b_id, b in enumerate(block_list):
-            print(indent + f"  B{b_id}: elems={[nodes[e] for e in b['elements']]}, "
+            print(indent + f"  B{b_id}: elems={[N[e] for e in b['elements']]}, "
                   f"w={b['weight']:.6g}, val={b['value']:.6g}")
-        print(indent + f"u (aligned to nodes): {[(nodes[i], float(u[i])) for i in range(n)]}")
+        print(indent + f"u (aligned to nodes): {[(N[i], float(u[i])) for i in range(n)]}")
         print(indent + "----")
     return u, block_list, elem_to_block
 
