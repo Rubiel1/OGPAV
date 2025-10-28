@@ -40,13 +40,16 @@ except Exception:
 # ---------------------------------------------------------------------
 
 def _hasse_graph(poset):
-    """Return the Hasse (transitively reduced) DAG for `poset` or accept an nx.DiGraph."""
     if isinstance(poset, nx.DiGraph):
         return poset
     h = getattr(poset, "hasse", None)
     if h is None:
         raise AttributeError("Expected a PoSet with a `.hasse` attribute/method.")
-    return h() if callable(h) else h
+    G = h() if callable(h) else h
+    if not isinstance(G, nx.DiGraph):
+        raise TypeError("`.hasse` must yield a networkx.DiGraph.")
+    return G
+
 
 
 def _induced_hasse(G: nx.DiGraph, nodes):
@@ -412,8 +415,8 @@ Partially Ordered Monotonic Regression).
         subG = _induced_hasse(G, seg)
         if verbose:
             _print_hasse(subG, title=f"Segment {k} induced Hasse", indent="  ")
-
-        Y_seg = np.array([Y[node_to_idx[v]] for v in seg], dtype=float)
+        labels_temp = list(subG)
+        Y_seg = np.array([Y[node_to_idx[v]] for v in labels_temp], dtype=float) 
         W_seg = np.array([weights[node_to_idx[v]] for v in seg], dtype=float) if weights is not None else None
 
         # Run GPAV on the segment using the segment order (labels)
@@ -424,7 +427,7 @@ Partially Ordered Monotonic Regression).
         if verbose:
             print("  Segment blocks (local -> labels):")
         for b in local_blocks:
-            members = [seg[i_local] for i_local in b['elements']]
+            members = b['labels']
             all_blocks.append(members)
             block_values.append(float(b['value']))
             block_weights.append(float(np.sum([weights[node_to_idx[v]] for v in members])))
@@ -498,16 +501,24 @@ Partially Ordered Monotonic Regression).
 
     # Final value per original block id
     final_block_value = np.zeros(B, dtype=float)
+    final_weight_value = np.zeros(B, dtype=float)
     for b_id in range(B):
         final_block_value[b_id] = block_blocks[elem_to_block_B[b_id]]['value']
-
+        final_weight_value[b_id] = block_blocks[elem_to_block_B[b_id]]['weight']
     # Propagate to original items (aligned to nodes order)
+    nodes_final: List[Dict] = []
     u_final = np.zeros(n, dtype=float)
     for b_id, members in enumerate(all_blocks):
         val = final_block_value[b_id]
+        weight_ = final_weight_value[b_id]
         for v in members:
             u_final[node_to_idx[v]] = val
-
+            
+            nodes_final.append({
+                "label": v,
+                "value": float(val),
+                "weight": float(weight_)
+            })
     if verbose:
         print("Final per-block values after block-level GPAV:")
         for b_id, members in enumerate(all_blocks):
@@ -516,7 +527,7 @@ Partially Ordered Monotonic Regression).
         print("  " + str([(nodes[i], float(u_final[i])) for i in range(n)]))
         print("== Segmentation-Based GPAV: finished ==")
 
-    return u_final
+    return u_final, nodes_final
 
 
 # ---------------------------------------------------------------------
@@ -540,7 +551,7 @@ if __name__ == "__main__":
     u, block_list, _ = gpav(Y_aligned, G, topo_order=T, verbose=True)
 
     print("\n=== DEMO: segmentation_based_gpav (segment_size=2) ===")
-    u_seg = segmentation_based_gpav(G, Y_aligned, T, segment_size=2, verbose=True)
+    u_seg, _ = segmentation_based_gpav(G, Y_aligned, T, segment_size=2, verbose=True)
     print("u_seg:", u_seg)
 
 
@@ -550,11 +561,13 @@ from collections.abc import Mapping as _Mapping  # local alias
 import numpy as _np
 
 def _nodes_in_hasse_for_labeldict(_poset):
-    try:
-        G = _hasse_graph(_poset)
-    except Exception:
-        G = _poset.hasse
+    if isinstance(_poset, nx.DiGraph):
+        return list(_poset.nodes())
+    G = _hasse_graph(_poset)
+    if not isinstance(G, nx.DiGraph):
+        raise TypeError("poset.hasse() must return a networkx.DiGraph")
     return list(G.nodes())
+
 
 def _align_map_by_label(_map_like, _nodes, _name, _default=None):
     if not isinstance(_map_like, _Mapping):
