@@ -244,7 +244,7 @@ FOR JVIONOTONIC REGRESSION".
         # Merge as long as a predecessor block has larger value (violations)
         while B_k_minus:
             B_k_minus = {h for h in B_k_minus if h in blocks}
-            violators = [h for h in B_k_minus if blocks[h]['value'] > blocks[k]['value']]
+            violators = [h for h in B_k_minus if blocks[h]['value'] >= blocks[k]['value']]
             if not violators:
                 break
             # pick max-value violator
