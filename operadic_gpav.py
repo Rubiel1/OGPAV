@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import hasse
 
 # Requires GPAV version that returns blocks
-from segmented_gpav import gpav, trend_following_order_lowery_fast
+#from segmented_gpav import gpav, trend_following_order_lowery_fast
 
 
 # -------------------------
@@ -237,7 +237,7 @@ def factorized_gpav_fast_parallel(
         print("Stage 1 — per-R_i local GPAV (parallel).")
 
     # --- Stage 1: local GPAV per R_i (parallel), keep true local blocks and block Hasse
-    u_local = A.copy()
+    #u_local = A.copy()
 
     # Global collectors
     block_members_global: List[List[int]] = []      # per block: list of global element indices
@@ -287,7 +287,7 @@ def factorized_gpav_fast_parallel(
             # Update local u
             off = offs[i]
             m = H_R_list[i].number_of_nodes()
-            u_local[off : off + m] = u_seg
+            #u_local[off : off + m] = u_seg
 
             # Build mapping local_block_id -> global_block_id for this group
             local_to_global = {k: start_idx + k for k in range(len(members_g))}
