@@ -155,7 +155,7 @@ Partially Ordered Monotonic Regression".
 def gpav(
     Y: np.ndarray,
     poset,
-    order: Optional[List] = None,   # list of node labels
+    topo_order: Optional[List] = None,   # list of node labels
     weights: Optional[np.ndarray] = None,
     *,
     verbose: bool = False,
@@ -201,10 +201,10 @@ FOR JVIONOTONIC REGRESSION".
             w = weights.astype(float, copy=False)
 
     # Topological order (labels) -> local indices
-    if order is None:
+    if topo_order is None:
         topo_labels = list(nx.topological_sort(G))
     else:
-        topo_labels = list(order)
+        topo_labels = list(topo_order)
     topo = [node_to_idx[v] for v in topo_labels]
 
     # Dictionary of (immediate) children

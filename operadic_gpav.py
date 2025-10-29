@@ -133,7 +133,7 @@ def _local_blocks_for_R(
         elems = list(b["elements"])  # local indices
         members.append(elems)
         block_values.append(float(b["value"]))
-        block_weights.append(float(np.sum(W_seg[elems])))
+        block_weights.append(float(b["weight"]))
 
     if verbose:
         print(f"[R{group_index}] Local GPAV produced {len(members)} block(s).")
