@@ -417,7 +417,7 @@ Partially Ordered Monotonic Regression).
             _print_hasse(subG, title=f"Segment {k} induced Hasse", indent="  ")
         labels_temp = list(subG)
         Y_seg = np.array([Y[node_to_idx[v]] for v in labels_temp], dtype=float) 
-        W_seg = np.array([weights[node_to_idx[v]] for v in seg], dtype=float) if weights is not None else None
+        W_seg = np.array([weights[node_to_idx[v]] for v in labels_temp], dtype=float) if weights is not None else None
 
         # Run GPAV on the segment using the segment order (labels)
         u_seg, local_blocks, _ = gpav(Y_seg, subG, topo_order=seg, weights=W_seg,

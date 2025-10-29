@@ -44,12 +44,6 @@ def as_reduced_hasse(poset_or_graph) -> nx.DiGraph:
     return nx.transitive_reduction(G)
 
 
-def is_isotonic_on_hasse(H: nx.DiGraph, vals: np.ndarray) -> bool:
-    """Check monotonicity using only Hasse edges: vals[u] <= vals[v] for each (u,v) in H."""
-    for u, v in H.edges:
-        if vals[u] > vals[v]:
-            return False
-    return True
 
 
 # -------------------------
@@ -62,7 +56,6 @@ def _local_blocks_for_R(
     W_seg: np.ndarray,
     *,
     use_lowery: bool = True,
-    precheck_isotonic: bool = False,
     verbose: bool = False,
     group_index: Optional[int] = None,
 ) -> Tuple[List[List[int]], List[float], List[float], np.ndarray, nx.DiGraph, Dict[int, int]]:
@@ -171,7 +164,6 @@ def factorized_gpav_fast_parallel(
     use_lowerY_blocks: bool = True,
     max_workers: Optional[int] = None,
     inputs_are_reduced: bool = False,
-    precheck_isotonic: bool = False,
     verbose: bool = False,
 ) -> np.ndarray:
     """
@@ -269,7 +261,6 @@ def factorized_gpav_fast_parallel(
         members, vals, wts, u_seg, G_loc, elem_to_block = _local_blocks_for_R(
             H_R, seg_vals, seg_w,
             use_lowery=use_lowerY_first,
-            precheck_isotonic=precheck_isotonic,
             verbose=verbose,
             group_index=i
         )
