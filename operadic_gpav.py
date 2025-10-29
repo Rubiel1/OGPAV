@@ -110,38 +110,6 @@ def _local_blocks_for_R(
         elem_to_block = {i: i for i in range(m)}
         return members, block_values, block_weights, u_seg, G_loc, elem_to_block
 
-    # Optional O(|E|) precheck to skip GPAV when already isotonic.
-    if precheck_isotonic:
-        if verbose:
-            print(f"[R{group_index}] Precheck isotonicity over Hasse edges...")
-        if H_R.number_of_edges() == 0:
-            members = [[i] for i in range(m)]
-            block_values = [float(A_seg[i]) for i in range(m)]
-            block_weights = [float(W_seg[i]) for i in range(m)]
-            u_seg = A_seg.copy()
-            G_loc = nx.DiGraph()
-            G_loc.add_nodes_from(range(m))
-            elem_to_block = {i: i for i in range(m)}
-            if verbose:
-                print(f"[R{group_index}] Edgeless at precheck; returning singletons.")
-            return members, block_values, block_weights, u_seg, G_loc, elem_to_block
-        else:
-            U_list, V_list = zip(*H_R.edges)
-            U = np.fromiter(U_list, dtype=int)
-            V = np.fromiter(V_list, dtype=int)
-            if np.all(A_seg[U] <= A_seg[V]):
-                if verbose:
-                    print(f"[R{group_index}] Already isotonic. Returning singletons and original Hasse.")
-                members = [[i] for i in range(m)]
-                block_values = [float(A_seg[i]) for i in range(m)]
-                block_weights = [float(W_seg[i]) for i in range(m)]
-                u_seg = A_seg.copy()
-                G_loc = nx.DiGraph()
-                G_loc.add_nodes_from(range(m))
-                G_loc.add_edges_from((int(u), int(v)) for (u, v) in H_R.edges)
-                elem_to_block = {i: i for i in range(m)}
-                return members, block_values, block_weights, u_seg, G_loc, elem_to_block
-
     # Build an order (labels); trend-following (LowerY) is topological and often good
     # Dict-safe: map local labels -> values
     Y_map_seg = {i: float(A_seg[i]) for i in range(H_R.number_of_nodes())}
