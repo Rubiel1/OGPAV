@@ -264,7 +264,7 @@ FOR JVIONOTONIC REGRESSION".
 
             if verbose:
                 print(indent + f"  Merge due to violation: head {N[j]!r} (val={U_j:.6g})"
-                      f" into head {N[j]!r} (val={U_k:.6g})"
+                      f" into head {N[k]!r} (val={U_k:.6g})"
                       f" -> new_val={new_val:.6g}, new_w={new_w:.6g}, elems={[N[e] for e in new_elems]}")
 
             # Update current block
