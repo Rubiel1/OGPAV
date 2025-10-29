@@ -612,7 +612,7 @@ except NameError:
     _old_gpav = None
 
 if _old_gpav is not None:
-    def gpav(Y, poset, order, weights=None, return_dict=False, *args, **kwargs):
+    def gpav(Y, poset, topo_order, weights=None, return_dict=False, *args, **kwargs):
         """
         Public wrapper: accepts dict {label:value} or array aligned to Hasse node order.
         Keeps output identical to the original unless return_dict=True, in which case
@@ -622,7 +622,7 @@ if _old_gpav is not None:
         Y_arr = _align_any_by_label_or_nodeorder(Y, nodes, "Y")
         w_arr = None if weights is None else _align_any_by_label_or_nodeorder(weights, nodes, "weights", _default=1.0)
 
-        res = _old_gpav(Y_arr, poset, order, weights=w_arr, *args, **kwargs)
+        res = _old_gpav(Y_arr, poset, topo_order, weights=w_arr, *args, **kwargs)
 
         if return_dict:
             if isinstance(res, tuple):
