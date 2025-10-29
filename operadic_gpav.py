@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import hasse
 
 # Requires GPAV version that returns blocks
-from segmented_gpav import gpav, trend_following_order_lowery_fast
+#from segmented_gpav import gpav, trend_following_order_lowery_fast
 
 
 # -------------------------
@@ -116,7 +116,7 @@ def _local_blocks_for_R(
 
     # gpav returns (u, block_list, elem_to_block)
     W_map_seg = {i: float(W_seg[i]) for i in range(H_R.number_of_nodes())}
-    u_seg, local_blocks, elem_to_block = gpav(Y_map_seg, H_R, order=topo, weights=W_map_seg)
+    u_seg, local_blocks, elem_to_block = gpav(Y_map_seg, H_R, topo_order=topo, weights=W_map_seg)
 
     # Assemble members/values/weights
     members: List[List[int]] = []
@@ -182,7 +182,7 @@ def factorized_gpav_fast_parallel(
     if verbose:
         print("== Operadic / Factorized SB-GPAV: start ==")
         print(f"Flags: use_lowerY_first={use_lowerY_first}, use_lowerY_blocks={use_lowerY_blocks}, "
-              f"inputs_are_reduced={inputs_are_reduced}, precheck_isotonic={precheck_isotonic}")
+              f"inputs_are_reduced={inputs_are_reduced}")
         print(f"Q nodes={len(Q)}, #R={len(R_subposets)}, |A|={len(A)}")
         if weights is not None:
             print("Weights provided.")
@@ -237,7 +237,7 @@ def factorized_gpav_fast_parallel(
         print("Stage 1 — per-R_i local GPAV (parallel).")
 
     # --- Stage 1: local GPAV per R_i (parallel), keep true local blocks and block Hasse
-    u_local = A.copy()
+    #u_local = A.copy()
 
     # Global collectors
     block_members_global: List[List[int]] = []      # per block: list of global element indices
@@ -287,7 +287,7 @@ def factorized_gpav_fast_parallel(
             # Update local u
             off = offs[i]
             m = H_R_list[i].number_of_nodes()
-            u_local[off : off + m] = u_seg
+            #u_local[off : off + m] = u_seg
 
             # Build mapping local_block_id -> global_block_id for this group
             local_to_global = {k: start_idx + k for k in range(len(members_g))}
@@ -371,7 +371,7 @@ def factorized_gpav_fast_parallel(
         print("Run GPAV on block DAG...")
     block_vals_map = {b: float(block_values[b]) for b in G_B.nodes()}
     block_wts_map  = {b: float(block_weights[b]) for b in G_B.nodes()}
-    u_blocks, _, _ = gpav(block_vals_map, G_B, order=TB, weights=block_wts_map)
+    u_blocks, _, _ = gpav(block_vals_map, G_B, topo_order=TB, weights=block_wts_map)
 
     # Propagate to elements
     u_final = np.empty_like(A)
@@ -412,7 +412,6 @@ if __name__ == "__main__":
         use_lowerY_first=True,
         use_lowerY_blocks=True,
         inputs_are_reduced=False,
-        precheck_isotonic=False,
         verbose=True,
     )
     print("Adjusted values (operadic/factorized):", u)
