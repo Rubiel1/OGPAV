@@ -291,7 +291,10 @@ FOR JVIONOTONIC REGRESSION".
 
         # Keep only existing heads (if part is for safety)
         blocks[k]['children_k'] = set(h for h in B_k_minus if h in blocks)
+        
 
+    preds = [{node_to_idx[p] for p in G.predecessors(N[i])} for i in range(n)]
+    succs = [{node_to_idx[s] for s in G.successors(N[i])} for i in range(n)]
     # Assemble outputs (LOCAL indexing 0..n-1)
     u = np.zeros(n, dtype=float)
     block_list: List[Dict] = []
@@ -299,11 +302,20 @@ FOR JVIONOTONIC REGRESSION".
 
     for head, b in blocks.items(): # b are the elements of the dictionary; head, the index
         b_id = len(block_list)
+
+        S = set(b['elements'])
+        _min_idx = [i for i in b['elements'] if not (preds[i] & S)]
+        _max_idx = [i for i in b['elements'] if not (succs[i] & S)]
+        _min_labels = [idx_to_node[i] for i in _min_idx]
+        _max_labels = [idx_to_node[i] for i in _max_idx]
+
         block_list.append({
             'elements': list(b['elements']),
             'labels': [idx_to_node[x] for x in b['elements']],
             'weight': float(b['weight']),
             'value': float(b['value']),
+            'min_labels': _min_labels,
+            'max_labels': _max_labels,
         }) # We copy the blocks without the children
         for e in b['elements']:
             u[e] = b['value']
