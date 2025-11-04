@@ -151,6 +151,7 @@ Partially Ordered Monotonic Regression".
 # GPAV (returns blocks) — with verbose tracing
 # ---------------------------------------------------------------------
 
+
 # GPAV algorithm
 def gpav(
     Y: np.ndarray,
@@ -160,7 +161,8 @@ def gpav(
     *,
     verbose: bool = False,
     name: str = "GPAV",
-    indent: str = ""
+    indent: str = "",
+    return_block_edges: bool = False,
 ) -> Tuple[np.ndarray, List[Dict], np.ndarray]:
     """
     Generalized Pool Adjacent Violators over a partial order from "DATA PREORDERING IN GENERALIZED PAV ALGORITHJM
@@ -300,7 +302,10 @@ FOR JVIONOTONIC REGRESSION".
     block_list: List[Dict] = []
     elem_to_block = np.empty(n, dtype=int)
 
+    block_min_idx_list: List[List[int]] = []   # ADDED: local indices per block
+    block_max_idx_list: List[List[int]] = []   # ADDED: local indices per block
     for head, b in blocks.items(): # b are the elements of the dictionary; head, the index
+
         b_id = len(block_list)
 
         S = set(b['elements'])
@@ -308,7 +313,9 @@ FOR JVIONOTONIC REGRESSION".
         _max_idx = [i for i in b['elements'] if not (succs[i] & S)]
         _min_labels = [idx_to_node[i] for i in _min_idx]
         _max_labels = [idx_to_node[i] for i in _max_idx]
-
+        block_min_idx_list.append(_min_idx)   # ADDED
+        block_max_idx_list.append(_max_idx)   # ADDED
+        
         block_list.append({
             'elements': list(b['elements']),
             'labels': [idx_to_node[x] for x in b['elements']],
@@ -322,6 +329,35 @@ FOR JVIONOTONIC REGRESSION".
             elem_to_block[e] = b_id
 
     transl = {N[i]: float(u[i]) for i in range(n)}
+    # ADDED: compute local block edges via Min–Max reachability on the local graph
+    block_edges: List[Tuple[int, int]] = []
+    if block_min_idx_list and block_max_idx_list:
+        reach_cache: Dict[int, set] = {}
+
+        def _reach_from(s: int) -> set:
+            R = reach_cache.get(s)
+            if R is not None:
+                return R
+            R = set()
+            stack = [s]
+            while stack:
+                u_ = stack.pop()
+                for v_ in succs[u_]:
+                    if v_ not in R:
+                        R.add(v_); stack.append(v_)
+            reach_cache[s] = R
+            return R
+
+        B_ = len(block_min_idx_list)
+        for a in range(B_):
+            if not block_min_idx_list[a]:
+                continue
+            RA = set().union(*(_reach_from(m) for m in block_min_idx_list[a])) if block_min_idx_list[a] else set()
+            for b in range(B_):
+                if a == b or not block_max_idx_list[b]:
+                    continue
+                if RA & set(block_max_idx_list[b]):
+                    block_edges.append((a, b))
 
     if verbose:
         print(indent + f"== {name}: finished ==")
@@ -331,6 +367,9 @@ FOR JVIONOTONIC REGRESSION".
                   f"w={b['weight']:.6g}, val={b['value']:.6g}")
         print(indent + f"u (aligned to nodes): {[(N[i], float(u[i])) for i in range(n)]}")
         print(indent + "----")
+
+    if return_block_edges:
+        return u, block_list, elem_to_block, block_edges
     return u, block_list, elem_to_block
 
 
