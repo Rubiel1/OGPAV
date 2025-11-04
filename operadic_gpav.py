@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import hasse
 
 # Requires GPAV version that returns blocks
-#from segmented_gpav import gpav, trend_following_order_lowery_fast
+from segmented_gpav import gpav, trend_following_order_lowery_fast
 
 
 # -------------------------
@@ -58,7 +58,7 @@ def _local_blocks_for_R(
     use_lowery: bool = True,
     verbose: bool = False,
     group_index: Optional[int] = None,
-) -> Tuple[List[List[int]], List[float], List[float], np.ndarray, nx.DiGraph, Dict[int, int]]:
+)  -> Tuple[List[List[int]], List[float], List[float], np.ndarray, nx.DiGraph, Dict[int, int], List[int], List[int], List, List]:
     """
     Run GPAV on a segment R (given by its Hasse H_R) and return:
       - members: list of blocks (each as local element indices 0..|R|-1)
@@ -89,7 +89,13 @@ def _local_blocks_for_R(
         G_loc = nx.DiGraph()
         G_loc.add_nodes_from(range(m))  # 1 node (id 0) or empty
         elem_to_block = {i: i for i in range(m)}
-        return members, block_values, block_weights, u_seg, G_loc, elem_to_block
+
+        mins_local = [0] if m == 1 else []
+        maxs_local = [0] if m == 1 else []
+        min_node_labels = [0] if m == 1 else []
+        max_node_labels = [0] if m == 1 else []
+        return members, block_values, block_weights, u_seg, G_loc, elem_to_block, mins_local, maxs_local, min_node_labels, max_node_labels
+        #return members, block_values, block_weights, u_seg, G_loc, elem_to_block
 
     if H_R.number_of_edges() == 0:
         if verbose:
@@ -101,7 +107,14 @@ def _local_blocks_for_R(
         G_loc = nx.DiGraph()
         G_loc.add_nodes_from(range(m))
         elem_to_block = {i: i for i in range(m)}
-        return members, block_values, block_weights, u_seg, G_loc, elem_to_block
+        
+        ids = list(range(m))
+        mins_local = ids[:]
+        maxs_local = ids[:]
+        min_node_labels = ids[:]    # singletons: each node is min & max in its 1-elem block
+        max_node_labels = ids[:]
+        return members, block_values, block_weights, u_seg, G_loc, elem_to_block, mins_local, maxs_local, min_node_labels, max_node_labels        
+        #return members, block_values, block_weights, u_seg, G_loc, elem_to_block
 
     # Build an order (labels); trend-following (LowerY) is topological and often good
     # Dict-safe: map local labels -> values
@@ -116,8 +129,9 @@ def _local_blocks_for_R(
 
     # gpav returns (u, block_list, elem_to_block)
     W_map_seg = {i: float(W_seg[i]) for i in range(H_R.number_of_nodes())}
-    u_seg, local_blocks, elem_to_block = gpav(Y_map_seg, H_R, topo_order=topo, weights=W_map_seg)
-
+    u_seg, local_blocks, elem_to_block, block_edges = gpav(
+        Y_map_seg, H_R, topo_order=topo, weights=W_map_seg, return_block_edges=True)
+   
     # Assemble members/values/weights
     members: List[List[int]] = []
     block_values: List[float] = []
@@ -133,21 +147,34 @@ def _local_blocks_for_R(
         for k, (mem, val, wt) in enumerate(zip(members, block_values, block_weights)):
             print(f"  - B{k} members={mem}, av={val:.6g}, w={wt:.6g}")
 
-    # Contract H_R along blocks to get block-level DAG, then reduce to Hasse
+    # # Contract H_R along blocks to get block-level DAG, then reduce to Hasse
+    # G_loc = nx.DiGraph()
+    # G_loc.add_nodes_from(range(len(members)))
+    # for u, v in H_R.edges:
+    #     bu = int(elem_to_block[u])
+    #     bv = int(elem_to_block[v])
+    #     if bu != bv:
+    #         G_loc.add_edge(bu, bv)
+    # if G_loc.number_of_edges() > 0:
+    #     G_loc = nx.transitive_reduction(G_loc)
     G_loc = nx.DiGraph()
     G_loc.add_nodes_from(range(len(members)))
-    for u, v in H_R.edges:
-        bu = int(elem_to_block[u])
-        bv = int(elem_to_block[v])
-        if bu != bv:
-            G_loc.add_edge(bu, bv)
+    for a, b in block_edges:
+        if a != b:
+            G_loc.add_edge(int(a), int(b))
     if G_loc.number_of_edges() > 0:
         G_loc = nx.transitive_reduction(G_loc)
-
     if verbose:
         print(f"[R{group_index}] Local block Hasse edges: {list(G_loc.edges)}")
+    # ADDED: identify extreme BLOCKS of R (by degree on G_loc)
+    mins_local = [n for n in G_loc.nodes if G_loc.in_degree(n) == 0]
+    maxs_local = [n for n in G_loc.nodes if G_loc.out_degree(n) == 0]
 
-    return members, block_values, block_weights, u_seg, G_loc, elem_to_block
+    # ADDED: gather extreme NODE LABELS inside those extreme blocks (use GPAV’s min/max labels)
+    min_node_labels = [lbl for b in mins_local for lbl in local_blocks[b]['min_labels']]
+    max_node_labels = [lbl for b in maxs_local for lbl in local_blocks[b]['max_labels']]
+    return members, block_values, block_weights, u_seg, G_loc, elem_to_block, mins_local, maxs_local, min_node_labels, max_node_labels
+    #return members, block_values, block_weights, u_seg, G_loc, elem_to_block
 
 
 # -------------------------
@@ -249,6 +276,8 @@ def factorized_gpav_fast_parallel(
     G_loc_list: List[Optional[nx.DiGraph]] = [None] * len(R_subposets)
     group_min_global: List[Optional[List[int]]] = [None] * len(R_subposets)
     group_max_global: List[Optional[List[int]]] = [None] * len(R_subposets)
+    group_min_node_labels: List[Optional[List[int]]] = [None] * len(R_subposets)
+    group_max_node_labels: List[Optional[List[int]]] = [None] * len(R_subposets)
 
     def _worker(i: int):
         H_R = H_R_list[i]
@@ -258,7 +287,7 @@ def factorized_gpav_fast_parallel(
         seg_w = W[off : off + m]
         if verbose:
             print(f"[R{i}] Dispatch worker: size={m}, off={off}")
-        members, vals, wts, u_seg, G_loc, elem_to_block = _local_blocks_for_R(
+        members, vals, wts, u_seg, G_loc, elem_to_block, mins_local, maxs_local, min_node_labels, max_node_labels = _local_blocks_for_R(
             H_R, seg_vals, seg_w,
             use_lowery=use_lowerY_first,
             verbose=verbose,
@@ -266,12 +295,13 @@ def factorized_gpav_fast_parallel(
         )
         # Map local -> global indices
         members_global = [[off + j for j in b] for b in members]
-        return i, members_global, vals, wts, u_seg, G_loc
-
+        return i, members_global, vals, wts, u_seg, G_loc, mins_local, maxs_local, min_node_labels, max_node_labels
+        
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         futures = [ex.submit(_worker, i) for i in range(len(R_subposets))]
         for fut in as_completed(futures):
-            i, members_g, vals, wts, u_seg, G_loc = fut.result()
+            #i, members_g, vals, wts, u_seg, G_loc = fut.result()
+            i, members_g, vals, wts, u_seg, G_loc, mins_local, maxs_local, min_node_labels, max_node_labels = fut.result()            
             if verbose:
                 print(f"[R{i}] Completed: produced {len(members_g)} block(s).")
             # Determine starting global block index for this group
@@ -307,10 +337,14 @@ def factorized_gpav_fast_parallel(
                 group_min_global[i] = []
                 group_max_global[i] = []
             else:
-                mins_local = [n for n in G_loc.nodes if G_loc.in_degree(n) == 0]
-                maxs_local = [n for n in G_loc.nodes if G_loc.out_degree(n) == 0]
+                #mins_local = [n for n in G_loc.nodes if G_loc.in_degree(n) == 0]
+                #maxs_local = [n for n in G_loc.nodes if G_loc.out_degree(n) == 0]
                 group_min_global[i] = [local_to_global[n] for n in mins_local]
                 group_max_global[i] = [local_to_global[n] for n in maxs_local]
+                # ADDED: remember extreme NODE LABELS of R_i in **global element indices**
+                off = offs[i]
+                group_min_node_labels[i] = [off + int(v) for v in min_node_labels]
+                group_max_node_labels[i] = [off + int(v) for v in max_node_labels]                
 
     B = len(block_members_global)
     block_values = np.asarray(block_values, dtype=float)
