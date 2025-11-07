@@ -38,7 +38,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import hasse
 
 # NOTE: The algorithm expects GPAV with block-returns and a LowerY ordering helper.
-from segmented_gpav import gpav, trend_following_order_lowery_fast
+from segmented_gpav import trend_following_order_lowery_fast
+from gpav import gpav_op as gpav
 
 
 # -------------------------
