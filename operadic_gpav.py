@@ -3,7 +3,6 @@
 edition of operadic_gpav.py.
 This version adds `verbose` flags.
 
-
 ============================== BIG-PICTURE (7 STEPS) ==============================
 This file implements the "operadic GPAV" strategy for the
 lexicographic sum P = Q(R_1, ..., R_m). 
@@ -40,7 +39,6 @@ import hasse
 # NOTE: The algorithm expects GPAV with block-returns and a LowerY ordering helper.
 from segmented_gpav import trend_following_order_lowery_fast
 from gpav import gpav_op as gpav
-
 
 # -------------------------
 # Utilities
