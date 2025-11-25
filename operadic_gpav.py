@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-edition of operadic_gpav.py.
+Edition of operadic_gpav.py.
 This version adds `verbose` flags.
+Authors: Eric Dolores Cuenca, Susana Lopez Moreno, Jonathan Toledo Toledo
 
 ============================== BIG-PICTURE (7 STEPS) ==============================
 This file implements the "operadic GPAV" strategy for the
