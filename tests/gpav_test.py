@@ -3,6 +3,7 @@ from operadic_gpav import factorized_gpav_fast_parallel
 from gpav import gpav_op, gpav_seg
 import networkx as nx
 import numpy as np
+import hasse
 
 class TestClass:
     def test_line_op(self):
