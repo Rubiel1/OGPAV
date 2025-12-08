@@ -1,3 +1,3 @@
-numpy >= 2.3.0
-networkx >= 3.5
-hasse >= 0.1.2
+numpy >= 2.0.2
+networkx >= 2.8.8
+hasse >= 0.2.0
