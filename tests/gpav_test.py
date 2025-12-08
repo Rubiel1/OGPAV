@@ -1,6 +1,7 @@
 from segmented_gpav import trend_following_order_lowery_fast
 from gpav import gpav_op, gpav_seg
 import networkx as nx
+import numpy as np
 
 class TestClass:
     def test_line_op(self):
