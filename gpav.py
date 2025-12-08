@@ -242,7 +242,7 @@ def gpav_op(
 ) -> Tuple[np.ndarray, List[Dict], np.ndarray]:
     """
     Generalized Pool Adjacent Violators over a partial order from "DATA PREORDERING IN GENERALIZED PAV ALGORITHM
-FOR MONOTONIC REGRESSION".
+    FOR MONOTONIC REGRESSION".
 
     Returns:
       u : fitted values aligned to internal node order
@@ -255,28 +255,60 @@ FOR MONOTONIC REGRESSION".
     node_to_idx = {v: i for i, v in enumerate(N)}
     idx_to_node = dict(enumerate(N))
 
-    # Align Y
-    Y = np.asarray(Y)
-    if Y.shape[0] != n:
+     # Align Y
+    if isinstance(Y, dict):
+        # Assume keys are node labels in the poset
         try:
             Y = np.array([Y[v] for v in N], dtype=float)
         except Exception as e:
-            raise ValueError("Y must align with poset node labels or Hasse node order.") from e
+            raise ValueError(
+                "Y dict must be keyed by poset node labels."
+            ) from e
     else:
-        Y = Y.astype(float, copy=False)
+        Y = np.asarray(Y)
+        if Y.ndim == 0:
+            # np.asarray(scalar) gives shape (), which caused your IndexError
+            raise ValueError(
+                "Y must be a 1D array-like or a dict keyed by node labels, not a scalar."
+            )
+        if Y.shape[0] != n:
+            # Try interpreting Y as a mapping indexed by node labels
+            try:
+                Y = np.array([Y[v] for v in N], dtype=float)
+            except Exception as e:
+                raise ValueError(
+                    "Y must align with poset node labels or Hasse node order."
+                ) from e
+        else:
+            Y = Y.astype(float, copy=False)
 
     # Align weights
     if weights is None:
         w = np.ones(n, dtype=float)
     else:
-        weights = np.asarray(weights)
-        if weights.shape[0] != n:
+        if isinstance(weights, dict):
             try:
                 w = np.array([weights[v] for v in N], dtype=float)
             except Exception as e:
-                raise ValueError("weights must align with poset node labels or Hasse node order.") from e
+                raise ValueError(
+                    "weights dict must be keyed by poset node labels."
+                ) from e
         else:
-            w = weights.astype(float, copy=False)
+            weights = np.asarray(weights)
+            if weights.ndim == 0:
+                raise ValueError(
+                    "weights must be a 1D array-like or a dict keyed by node labels, not a scalar."
+                )
+            if weights.shape[0] != n:
+                try:
+                    w = np.array([weights[v] for v in N], dtype=float)
+                except Exception as e:
+                    raise ValueError(
+                        "weights must align with poset node labels or Hasse node order."
+                    ) from e
+            else:
+                w = weights.astype(float, copy=False)
+
 
     # Topological order (labels) -> local indices
     if topo_order is None:
