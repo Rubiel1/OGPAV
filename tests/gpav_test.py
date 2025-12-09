@@ -43,7 +43,7 @@ class TestClass:
         assert set(u) == {np.float64(10.0), np.float64(11.0), np.float64(12.0)}, "error of factorized_gpav_fast_parallel"
     def test_position_op(self):
         # a<b<c, compose on b by {x,y,z} < {X,Y,Z}
-        # Example 1: Small Q with 6 components R_i
+        # Example 1: Small Q with 3 components R_i
         poset = hasse.PoSet.from_chains([0,1,2])
         R_subposets = [
             hasse.PoSet.from_chains([0],),
@@ -61,4 +61,24 @@ class TestClass:
             inputs_are_reduced=False,
             verbose=True,
         )
-        assert u_[2] == Y[2], "error on the implementation of factorized_gpav_fast_parallel, it is modifying nodes that are supposed to be untouched"
+        assert u[3] == Y[3], "error on the implementation of factorized_gpav_fast_parallel, it is modifying nodes that are supposed to be untouched"
+    def test_position2_op(self):
+        # a<b<c, compose on b by {x,y,z} < {X,Y,Z}
+        # Example 1: Small Q with 2 components R_i
+        poset = hasse.PoSet.from_chains([0,1])
+        R_subposets = [
+            hasse.PoSet.from_chains([0, 1], [0, 2], [0, 3]),
+            hasse.PoSet.from_chains([0, 1],[2, 1], [3, 1]),
+        ]
+        Y = [1, 7, 3, 9, 5, 6, 10, 4]
+        Y_map = {i: float(y) for i, y in enumerate(Y)}
+        u = factorized_gpav_fast_parallel(
+            Q=poset,
+            R_subposets=R_subposets,
+            A=Y_map,
+            use_lowerY_first=True,
+            use_lowerY_blocks=True,
+            inputs_are_reduced=False,
+            verbose=True,
+        )
+        assert u[2] == Y[2], "error on the implementation of factorized_gpav_fast_parallel, it is modifying nodes that are supposed to be untouched"
