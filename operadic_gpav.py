@@ -418,7 +418,7 @@ def factorized_gpav_fast_parallel(
     group_max_node_labels: List[Optional[List[int]]] = [None] * len(R_subposets)
 
     # Worker to process each R_i independently.
-   def _worker(i: int):
+    def _worker(i: int):
         """
         Process one fiber R_i:
           * Build label-based segment maps from the global arrays.
