@@ -1,4 +1,4 @@
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple, Dict, Optional, Union
 import heapq
 import networkx as nx
 import numpy as np
@@ -240,14 +240,64 @@ def gpav_op(
     indent: str = "",
     return_block_edges: bool = False,
 ) -> Tuple[np.ndarray, List[Dict], np.ndarray]:
-    """
-    Generalized Pool Adjacent Violators over a partial order from "DATA PREORDERING IN GENERALIZED PAV ALGORITHM
-    FOR MONOTONIC REGRESSION".
+     """
+    Generalized Pool Adjacent Violators over a partial order from
+    "DATA PREORDERING IN GENERALIZED PAV ALGORITHM FOR MONOTONIC REGRESSION".
 
-    Returns:
-      u : fitted values aligned to internal node order
-      block_list : each dict has {'elements': [local ids], 'weight': float, 'value': float}
-      elem_to_block : LOCAL element index -> final block id
+    This variant is designed to be label-aware.
+
+    Conceptually:
+
+      * The input data `Y` is a mapping from **poset node labels** to values.
+        You may pass this either as:
+          - a 1D NumPy array (or array-like) already aligned with the internal
+            Hasse node order, or
+          - a dictionary `{label -> value}` keyed by the node labels of `poset`.
+
+      * Optional `weights` behave similarly:
+          - 1D array-like aligned with the Hasse node order, or
+          - dict `{label -> weight}` keyed by node labels.
+
+    Internally, the function builds a node list `N = list(G.nodes())` from the
+    Hasse diagram `G` of the given `poset`, and aligns the numeric arrays so
+    that index `i` corresponds to label `N[i]`.
+
+    Parameters
+    ----------
+    Y :
+        1D array-like or dict keyed by poset node labels. The values to be
+        isotonic-regressed.
+    poset :
+        Either a `hasse.PoSet` instance or a `networkx.DiGraph` representing
+        the Hasse diagram of the partial order.
+    topo_order :
+        Optional list of node labels specifying the processing order. If not
+        given, a topological sort of the Hasse graph is used.
+    weights :
+        Optional 1D array-like or dict keyed by node labels giving observation
+        weights. If `None`, all weights are taken as 1.
+    verbose :
+        If True, prints debugging information about the blocks and values.
+    name :
+        Label used in verbose prints.
+    indent :
+        String prefix used to indent verbose output.
+    return_block_edges :
+        If True, also returns a list of block-level edges in the final block DAG.
+
+    Returns
+    -------
+    u : np.ndarray
+        Fitted values aligned to the internal node order `N`
+        (i.e., `u[i]` corresponds to node label `N[i]`).
+    block_list : List[Dict]
+        Each dict has (at least) the keys:
+          - 'elements': list of LOCAL indices (0..n-1),
+          - 'labels'  : list of corresponding node labels,
+          - 'weight'  : total block weight,
+          - 'value'   : block value.
+    elem_to_block : np.ndarray
+        LOCAL element index -> final block id.
     """
     G = _hasse_graph(poset)
     N = list(G.nodes())
