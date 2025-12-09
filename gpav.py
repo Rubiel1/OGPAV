@@ -230,10 +230,10 @@ FOR MNOTONIC REGRESSION".
 # GPAV algorithm for operadic GPAV
 # ---------------------------------------------------------------------
 def gpav_op(
-    Y: np.ndarray,
+    Y: Union[np.ndarray, Dict],
     poset,
     topo_order: Optional[List] = None,   # list of node labels
-    weights: Optional[np.ndarray] = None,
+    weights: Optional[Union[np.ndarray, Dict]] = None,
     *,
     verbose: bool = False,
     name: str = "GPAV",
