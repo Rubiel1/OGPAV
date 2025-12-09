@@ -240,7 +240,7 @@ def gpav_op(
     indent: str = "",
     return_block_edges: bool = False,
 ) -> Tuple[np.ndarray, List[Dict], np.ndarray]:
-     """
+    """
     Generalized Pool Adjacent Violators over a partial order from
     "DATA PREORDERING IN GENERALIZED PAV ALGORITHM FOR MONOTONIC REGRESSION".
 
