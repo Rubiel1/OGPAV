@@ -82,3 +82,24 @@ class TestClass:
             verbose=True,
         )
         assert u[2] == Y[2], "error on the implementation of factorized_gpav_fast_parallel, it is modifying nodes that are supposed to be untouched"
+    def test_secondstage_op(self):
+        # a,b<c, compose on a by {x,y} 
+        # Example 1: Small Q with 3 components R_i
+        poset = hasse.PoSet.from_chains([0,1],[2,1])
+        R_subposets = [
+            hasse.PoSet.from_chains([0],[1]),#orden global 0,1
+            hasse.PoSet.from_chains([0]),#orden global 2
+            hasse.PoSet.from_chains([0]),#orden global 3
+        ]
+        Y = [10,9,8,12]
+        Y_map = {i: float(y) for i, y in enumerate(Y)}
+        u = factorized_gpav_fast_parallel(
+            Q=poset,
+            R_subposets=R_subposets,
+            A=Y_map,
+            use_lowerY_first=True,
+            use_lowerY_blocks=True,
+            inputs_are_reduced=False,
+            verbose=True,
+        )#[]
+        assert np.array_equal(u, np.array([10.0,9.0,10.0,10.0])), "error on the implementation of factorized_gpav_fast_parallel, it is modifying nodes that are supposed to be untouched"        
