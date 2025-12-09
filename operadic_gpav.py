@@ -372,9 +372,14 @@ def factorized_gpav_fast_parallel(
     def _worker(i: int):
         H_R = H_R_list[i]
         off = offs[i]
-        m = H_R.number_of_nodes()
-        seg_vals = A_array[off : off + m]
-        seg_w = W_array[off : off + m]
+        # Local node labels in this fiber (as used inside _local_blocks_for_R / gpav)
+        local_nodes = list(H_R.nodes())
+        m = len(local_nodes)
+        # Build label-based segment dicts from the global arrays.
+        # Assumes local node labels are integers 0..(m_i-1), so that
+        # the corresponding global label is (off + local_label).
+        seg_vals = {lbl: float(A_array[off + int(lbl)]) for lbl in local_nodes}
+        seg_w    = {lbl: float(W_array[off + int(lbl)]) for lbl in local_nodes}
         if verbose:
             print(f"[R{i}] Dispatch worker: size={m}, off={off}")
         members, vals, wts, u_seg, G_loc, elem_to_block, mins_local, maxs_local, min_node_labels, max_node_labels = _local_blocks_for_R(
@@ -383,9 +388,11 @@ def factorized_gpav_fast_parallel(
             verbose=verbose,
             group_index=i
         )
-        # Map local → global indices for block membership lists.
-        members_global = [[off + j for j in b] for b in members]
+        # Map local block member indices → global element indices.
+        # Each local index j refers to the element whose label is local_nodes[j].
+        members_global = [[off + int(local_nodes[j]) for j in b] for b in members]
         return i, members_global, vals, wts, u_seg, G_loc, mins_local, maxs_local, min_node_labels, max_node_labels
+
 
     # Parallel map over subposets.
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
