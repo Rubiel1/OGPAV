@@ -30,7 +30,7 @@ lexicographic sum P = Q(R_1, ..., R_m).
 """
 
 from __future__ import annotations
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple, Dict, Optional, Hashable
 import numpy as np
 import networkx as nx
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -39,6 +39,12 @@ import hasse
 # NOTE: The algorithm expects GPAV with block-returns and a LowerY ordering helper.
 from segmented_gpav import trend_following_order_lowery_fast
 from gpav import gpav_op as gpav
+
+# --- Aliases---
+NodeLabel = Hashable       # label of a node in a poset (local or global)
+LocalIndex = int           # index 0..m_i-1 within a fiber R_i (position in nodes list)
+GlobalIndex = int          # index 0..N-1 in the lexicographic sum
+BlockId = int              # index of a block in a block-level DAG
 
 # -------------------------
 # Utilities
@@ -83,24 +89,59 @@ def _local_blocks_for_R(
     use_lowery: bool = True,
     verbose: bool = False,
     group_index: Optional[int] = None,
-)  -> Tuple[List[List[int]], List[float], List[float], np.ndarray, nx.DiGraph, Dict[int, int], List[int], List[int], List, List]:
+) -> Tuple[
+    List[List[LocalIndex]],           # members
+    List[float],                      # block_values
+    List[float],                      # block_weights
+    np.ndarray,                       # u_seg (length m)
+    nx.DiGraph,                       # G_loc
+    Dict[LocalIndex, BlockId],        # elem_to_block
+    List[BlockId],                    # mins_local
+    List[BlockId],                    # maxs_local
+    List[NodeLabel],                  # min_node_labels
+    List[NodeLabel],                  # max_node_labels
+]:
     """
     === Implements Steps 1–4 for a single R_i ===
-    Run GPAV on a segment R (given by its Hasse H_R) and return:
-      - members: list of blocks (each as local element indices 0..|R|-1)
-      - block_values: weighted averages per block
-      - block_weights: weight totals per block
-      - u_seg: per-element smoothed values (aligned to 0..|R|-1)
-      - G_loc: *block-level Hasse DAG* (nodes = local blocks, edges = covers)
-      - elem_to_block: map local element → local block id
-      - mins_local / maxs_local: indices of extreme blocks in G_loc
-      - min_node_labels / max_node_labels: element labels inside those extremes
 
-    A_seg, W_seg:
-      Either
-        * 1D array-like, where current code assumes that local labels are
-          integers 0..m-1 and A_seg[j] is the value for label j, or
-        * dict {local_label -> value}, keyed by the node labels of H_R.
+    Run GPAV on one fiber R_i (given by its Hasse diagram H_R) and return:
+
+      - members:
+          list of blocks, each as a list of LOCAL indices in 0..m-1.
+          Local index j means "the j-th entry in nodes = list(H_R.nodes())".
+
+      - block_values:
+          weighted averages per block (same order as `members`).
+
+      - block_weights:
+          total weights per block.
+
+      - u_seg:
+          per-element fitted values, 1D array of length m, aligned with
+          `nodes` (i.e. u_seg[j] is the value for nodes[j]).
+
+      - G_loc:
+          block-level Hasse DAG (nodes are BlockId values, edges are covers).
+
+      - elem_to_block:
+          mapping from LOCAL element index j (0..m-1) to BlockId.
+
+      - mins_local / maxs_local:
+          lists of BlockIds corresponding to minimal / maximal blocks
+          in G_loc (by in/out-degree).
+
+      - min_node_labels / max_node_labels:
+          lists of underlying element labels inside those extreme blocks.
+
+    Parameters
+    ----------
+    H_R :
+        Hasse diagram of the fiber poset R_i.
+    A_seg, W_seg :
+        Either
+          * 1D array-like, interpreted as A_seg[j] / W_seg[j] for label j
+            (labels are assumed to be integers 0..m-1), or
+          * dict {local_label -> value} keyed by the node labels of H_R.
     """
     # Local node labels and count
     nodes = list(H_R.nodes())
@@ -312,9 +353,17 @@ def factorized_gpav_fast_parallel(
     # Basics & alignment for vectorized data.
     offs = _offsets_from_subposets(R_subposets)
     N = sum(len(R) for R in R_subposets)
+
     # ------------------------------------------------------------------
-    # Normalize A into a 1D float64 array A_array of length N.
-    # Conceptually, A_array[g] is the value for global label g.
+    # Global data model:
+    #   * There are N "atoms" in the lexicographic sum P = Q(R_0,...,R_{m-1}).
+    #   * We treat their labels as integers 0..N-1.
+    #   * A_array[g] is the observed value at global label g.
+    #   * W_array[g] is the weight at global label g.
+    #
+    # The mapping "which global label belongs to which fiber R_i" is
+    # controlled solely by `offs` (these offsets are contiguous sums
+    # of |R_i|).
     # ------------------------------------------------------------------
     if isinstance(A, dict):
         A_array = np.array([float(A[i]) for i in range(N)], dtype=float)
@@ -369,29 +418,83 @@ def factorized_gpav_fast_parallel(
     group_max_node_labels: List[Optional[List[int]]] = [None] * len(R_subposets)
 
     # Worker to process each R_i independently.
-    def _worker(i: int):
+   def _worker(i: int):
+        """
+        Process one fiber R_i:
+          * Build label-based segment maps from the global arrays.
+          * Run local GPAV to obtain blocks and segment fits.
+          * Map local block membership to global element indices.
+        """
         H_R = H_R_list[i]
-        off = offs[i]
-        # Local node labels in this fiber (as used inside _local_blocks_for_R / gpav)
-        local_nodes = list(H_R.nodes())
+        offset = offs[i]
+
+        # Local node labels for this fiber (e.g. 0..m_i-1). We never rely on
+        # their order beyond what H_R gives us; local indices 0..m-1 are
+        # positions in this list.
+        local_nodes: List[NodeLabel] = list(H_R.nodes())
         m = len(local_nodes)
-        # Build label-based segment dicts from the global arrays.
-        # Assumes local node labels are integers 0..(m_i-1), so that
-        # the corresponding global label is (off + local_label).
-        seg_vals = {lbl: float(A_array[off + int(lbl)]) for lbl in local_nodes}
-        seg_w    = {lbl: float(W_array[off + int(lbl)]) for lbl in local_nodes}
+
+        # Build label-based segment dictionaries from the GLOBAL arrays.
+        #
+        # Convention:
+        #   - Each local label ℓ is assumed to be an integer in 0..m_i-1.
+        #   - The corresponding GLOBAL label is (offset + ℓ).
+        #
+        # A_array[g] / W_array[g] are the canonical global value/weight vectors.
+        seg_vals = {
+            lbl: float(A_array[offset + int(lbl)])
+            for lbl in local_nodes
+        }
+        seg_w = {
+            lbl: float(W_array[offset + int(lbl)])
+            for lbl in local_nodes
+        }
+
         if verbose:
-            print(f"[R{i}] Dispatch worker: size={m}, off={off}")
-        members, vals, wts, u_seg, G_loc, elem_to_block, mins_local, maxs_local, min_node_labels, max_node_labels = _local_blocks_for_R(
-            H_R, seg_vals, seg_w,
+            print(f"[R{i}] Dispatch worker: size={m}, off={offset}")
+
+        (
+            members,
+            vals,
+            wts,
+            u_seg,
+            G_loc,
+            elem_to_block,
+            mins_local,
+            maxs_local,
+            min_node_labels,
+            max_node_labels,
+        ) = _local_blocks_for_R(
+            H_R,
+            seg_vals,
+            seg_w,
             use_lowery=use_lowerY_first,
             verbose=verbose,
-            group_index=i
+            group_index=i,
         )
-        # Map local block member indices → global element indices.
-        # Each local index j refers to the element whose label is local_nodes[j].
-        members_global = [[off + int(local_nodes[j]) for j in b] for b in members]
-        return i, members_global, vals, wts, u_seg, G_loc, mins_local, maxs_local, min_node_labels, max_node_labels
+
+        # Map local block membership (indices into local_nodes) → global
+        # element indices 0..N-1.
+        #
+        # LOCAL index j refers to the element whose label is local_nodes[j].
+        # GLOBAL label is then (offset + local_label).
+        members_global: List[List[GlobalIndex]] = [
+            [offset + int(local_nodes[j]) for j in block]
+            for block in members
+        ]
+
+        return (
+            i,
+            members_global,
+            vals,
+            wts,
+            u_seg,
+            G_loc,
+            mins_local,
+            maxs_local,
+            min_node_labels,
+            max_node_labels,
+        )
 
 
     # Parallel map over subposets.
