@@ -261,25 +261,37 @@ def factorized_gpav_fast_parallel(
     # Basics & alignment for vectorized data.
     offs = _offsets_from_subposets(R_subposets)
     N = sum(len(R) for R in R_subposets)
-
-    # Accept dict {global_index: value} or array-like.
+    # ------------------------------------------------------------------
+    # Normalize A into a 1D float64 array A_array of length N.
+    # Conceptually, A_array[g] is the value for global label g.
+    # ------------------------------------------------------------------
     if isinstance(A, dict):
-        A = np.array([float(A[i]) for i in range(N)], dtype=float)
+        A_array = np.array([float(A[i]) for i in range(N)], dtype=float)
     else:
-        A = np.asarray(A, dtype=float)
-    if A.shape[0] != N:
-        raise ValueError(f"A has length {A.shape[0]} but sum|R_i| = {N}")
+        A_array = np.asarray(A, dtype=float)
+    if A_array.ndim != 1:
+        raise ValueError(f"A must be 1D; got shape {A_array.shape!r}")
+    if A_array.shape[0] != N:
+        raise ValueError(f"A has length {A_array.shape[0]} but sum|R_i| = {N}")
 
-    # Accept dict {global_index: weight} or array-like.
+    # ------------------------------------------------------------------
+    # Normalize weights into a 1D float64 array W_array of length N.
+    # If weights is None or missing in a dict, default weight is 1.0.
+    # ------------------------------------------------------------------
     if weights is None:
-        W = np.ones(N, dtype=float)
+        W_array = np.ones(N, dtype=float)
     else:
         if isinstance(weights, dict):
-            W = np.array([float(weights.get(i, 1.0)) for i in range(N)], dtype=float)
+            W_array = np.array(
+                [float(weights.get(i, 1.0)) for i in range(N)],
+                dtype=float,
+            )
         else:
-            W = np.asarray(weights, dtype=float)
-        if W.shape[0] != N:
-            raise ValueError(f"weights has length {W.shape[0]} but sum|R_i| = {N}")
+            W_array = np.asarray(weights, dtype=float)
+        if W_array.ndim != 1:
+            raise ValueError(f"weights must be 1D; got shape {W_array.shape!r}")
+        if W_array.shape[0] != N:
+            raise ValueError(f"weights has length {W_array.shape[0]} but sum|R_i| = {N}")
 
     # Quick sanity checks on Q vs. number of components.
     if H_Q.number_of_nodes()!= len(H_R_list):
@@ -310,8 +322,8 @@ def factorized_gpav_fast_parallel(
         H_R = H_R_list[i]
         off = offs[i]
         m = H_R.number_of_nodes()
-        seg_vals = A[off : off + m]
-        seg_w = W[off : off + m]
+        seg_vals = A_array[off : off + m]
+        seg_w = W_array[off : off + m]
         if verbose:
             print(f"[R{i}] Dispatch worker: size={m}, off={off}")
         members, vals, wts, u_seg, G_loc, elem_to_block, mins_local, maxs_local, min_node_labels, max_node_labels = _local_blocks_for_R(
@@ -428,7 +440,7 @@ def factorized_gpav_fast_parallel(
     u_blocks, _, _ = gpav(block_vals_map, G_B, topo_order=TB, weights=block_wts_map)
 
     # (Step 7) Propagate block-level fits back to elements.
-    u_final = np.empty_like(A)
+    u_final = np.empty_like(A_array)
     for b_idx, members in enumerate(block_members_global):
         u_final[members] = u_blocks[b_idx]
 
