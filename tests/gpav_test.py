@@ -102,4 +102,39 @@ class TestClass:
             inputs_are_reduced=False,
             verbose=True,
         )#[]
-        assert np.array_equal(u, np.array([10.0,9.0,10.0,10.0])), "error on the implementation of factorized_gpav_fast_parallel, it is modifying nodes that are supposed to be untouched"        
+        assert np.array_equal(u, np.array([10.0,9.0,10.0,10.0])), "error on the implementation of factorized_gpav_fast_parallel, it is modifying nodes that are supposed to be untouched"
+    def test_order_input_op(self):
+        poset = hasse.PoSet.from_chains([0,1,2])
+        R_subposets = [
+            hasse.PoSet.from_chains([0]),#orden global 0
+            hasse.PoSet.from_chains([0,3],[1,4],[2,5],[0,4],[1,5],[2,3],[0,5],[1,3],[2,4]),#orden global 1,2,3
+            hasse.PoSet.from_chains([0]),#orden global 7
+        ]
+        Y = [1,7,3,9,5,6,10,4]
+        Y_map = {i: float(y) for i, y in enumerate(Y)}
+        u = factorized_gpav_fast_parallel(
+            Q=poset,
+            R_subposets=R_subposets,
+            A=Y_map,
+            use_lowerY_first=True,
+            use_lowerY_blocks=True,
+            inputs_are_reduced=False,
+            verbose=True,
+        )#[]
+        poset = hasse.PoSet.from_chains([0,1,2])
+        R_subposets = [
+            hasse.PoSet.from_chains([0]),#orden global 0
+            hasse.PoSet.from_chains([0],[1],[0,3],[1,4],[2,5],[0,4],[1,5],[2,3],[0,5],[1,3],[2,4]),#orden global 1,2,3
+            hasse.PoSet.from_chains([0]),#orden global 7
+        ]
+        Y_map = {i: float(y) for i, y in enumerate(Y)}
+        v = factorized_gpav_fast_parallel(
+            Q=poset,
+            R_subposets=R_subposets,
+            A=Y_map,
+            use_lowerY_first=True,
+            use_lowerY_blocks=True,
+            inputs_are_reduced=False,
+            verbose=True,
+        )#[]
+        assert  np.array_equal(u,v)
