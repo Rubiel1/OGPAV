@@ -77,8 +77,8 @@ def as_reduced_hasse(poset_or_graph) -> nx.DiGraph:
 
 def _local_blocks_for_R(
     H_R: nx.DiGraph,
-    A_seg: np.ndarray,
-    W_seg: np.ndarray,
+    A_seg,
+    W_seg,
     *,
     use_lowery: bool = True,
     verbose: bool = False,
@@ -96,25 +96,76 @@ def _local_blocks_for_R(
       - mins_local / maxs_local: indices of extreme blocks in G_loc
       - min_node_labels / max_node_labels: element labels inside those extremes
 
-    Fast paths:
-      - If m≤1, return identity (no pooling) and a trivial G_loc.
-      - If H_R is edgeless, the data are already isotonic → singleton blocks.
+    A_seg, W_seg:
+      Either
+        * 1D array-like, where current code assumes that local labels are
+          integers 0..m-1 and A_seg[j] is the value for label j, or
+        * dict {local_label -> value}, keyed by the node labels of H_R.
     """
-    A_seg = np.asarray(A_seg, dtype=float)
-    W_seg = np.asarray(W_seg, dtype=float)
-
-    m = H_R.number_of_nodes()
+    # Local node labels and count
+    nodes = list(H_R.nodes())
+    m = len(nodes)
     if verbose:
         print(f"[R{group_index}] Start segment: m={m}, |E|={H_R.number_of_edges()}")
+
+    # ------------------------------------------------------------------
+    # Normalize A_seg into a 1D float array A_arr and define a label->value
+    # accessor _val(lbl). For array input we keep the existing semantics:
+    # A_seg[j] is interpreted as the value for local label j (assumed int).
+    # ------------------------------------------------------------------
+    if isinstance(A_seg, dict):
+        def _val(lbl):
+            return float(A_seg[lbl])
+        # For convenience (trivial / edgeless cases), also build an array
+        # aligned to the current node list.
+        A_arr = np.array([_val(v) for v in nodes], dtype=float)
+    else:
+        A_arr = np.asarray(A_seg, dtype=float)
+        if A_arr.ndim != 1:
+            raise ValueError(
+                f"A_seg must be 1D or a dict keyed by local labels; "
+                f"got shape {A_arr.shape!r}"
+            )
+        if A_arr.shape[0] < m:
+            raise ValueError(
+                f"A_seg has length {A_arr.shape[0]} but segment has {m} node(s)."
+            )
+
+        def _val(lbl):
+            # keep current assumption: label is an int index into A_arr
+            return float(A_arr[int(lbl)])
+
+    # ------------------------------------------------------------------
+    # Normalize W_seg into a 1D float array W_arr and define label->weight
+    # accessor _wt(lbl) with the same conventions as for A_seg.
+    # ------------------------------------------------------------------
+    if isinstance(W_seg, dict):
+        def _wt(lbl):
+            return float(W_seg[lbl])
+        W_arr = np.array([_wt(v) for v in nodes], dtype=float)
+    else:
+        W_arr = np.asarray(W_seg, dtype=float)
+        if W_arr.ndim != 1:
+            raise ValueError(
+                f"W_seg must be 1D or a dict keyed by local labels; "
+                f"got shape {W_arr.shape!r}"
+            )
+        if W_arr.shape[0] < m:
+            raise ValueError(
+                f"W_seg has length {W_arr.shape[0]} but segment has {m} node(s)."
+            )
+
+        def _wt(lbl):
+            return float(W_arr[int(lbl)])
 
     # (Step 2 trivial case) If the segment is size-0/1, pooling is trivial.
     if m <= 1:
         if verbose:
             print(f"[R{group_index}] Trivial segment (m={m}). Returning identity.")
         members = [[0]] if m == 1 else []
-        block_values = [float(A_seg[0])] if m == 1 else []
-        block_weights = [float(W_seg[0])] if m == 1 else []
-        u_seg = A_seg.copy()
+        block_values = [float(A_arr[0])] if m == 1 else []
+        block_weights = [float(W_arr[0])] if m == 1 else []
+        u_seg = A_arr.copy()
         G_loc = nx.DiGraph()
         G_loc.add_nodes_from(range(m))  # node id 0 for m==1, else empty
         elem_to_block = {i: i for i in range(m)}
@@ -130,9 +181,9 @@ def _local_blocks_for_R(
         if verbose:
             print(f"[R{group_index}] Edgeless segment. Skipping GPAV; returning singletons.")
         members = [[i] for i in range(m)]
-        block_values = [float(A_seg[i]) for i in range(m)]
-        block_weights = [float(W_seg[i]) for i in range(m)]
-        u_seg = A_seg.copy()
+        block_values = [float(A_arr[i]) for i in range(m)]
+        block_weights = [float(W_arr[i]) for i in range(m)]
+        u_seg = A_arr.copy()
         G_loc = nx.DiGraph(); G_loc.add_nodes_from(range(m))
         elem_to_block = {i: i for i in range(m)}
 
@@ -143,8 +194,8 @@ def _local_blocks_for_R(
         max_node_labels = ids[:]
         return members, block_values, block_weights, u_seg, G_loc, elem_to_block, mins_local, maxs_local, min_node_labels, max_node_labels
 
-    # (Step 1) Choose a topological order for GPAV; LowerY often improves pooling.
-    Y_map_seg = {i: float(A_seg[i]) for i in range(H_R.number_of_nodes())}
+    # (Step 1) Choose a topological order for GPAV; LowerY often improves pooling.    # Build label-based maps Y_map_seg / W_map_seg keyed by local node labels.
+    Y_map_seg = {lbl: _val(lbl) for lbl in nodes}
     topo = (
         trend_following_order_lowery_fast(H_R, Y_map_seg)
         if use_lowery
@@ -155,7 +206,7 @@ def _local_blocks_for_R(
 
     # Run GPAV on the segment (Step 2) and get the **local block list** and
     # the **block-level edges** (pre-Hasse); elem_to_block aligns elements→blocks.
-    W_map_seg = {i: float(W_seg[i]) for i in range(H_R.number_of_nodes())}
+    W_map_seg = {lbl: _wt(lbl) for lbl in nodes}
     u_seg, local_blocks, elem_to_block, block_edges = gpav(
         Y_map_seg, H_R, topo_order=topo, weights=W_map_seg, return_block_edges=True)
 
