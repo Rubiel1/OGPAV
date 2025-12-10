@@ -89,6 +89,7 @@ def _local_blocks_for_R(
     use_lowery: bool = True,
     verbose: bool = False,
     group_index: Optional[int] = None,
+    custom_topo: Optional[List[NodeLabel]] = None,
 ) -> Tuple[
     List[List[LocalIndex]],           # members
     List[float],                      # block_values
@@ -142,6 +143,10 @@ def _local_blocks_for_R(
           * 1D array-like, interpreted as A_seg[j] / W_seg[j] for label j
             (labels are assumed to be integers 0..m-1), or
           * dict {local_label -> value} keyed by the node labels of H_R.
+    custom_topo :
+        Optional user-provided topological order (list of node labels of H_R).
+        If given, this is passed as `topo_order` to `gpav` and `use_lowery`
+        is ignored for this segment.
     """
     # Local node labels and count
     nodes = list(H_R.nodes())
@@ -235,15 +240,33 @@ def _local_blocks_for_R(
         max_node_labels = ids[:]
         return members, block_values, block_weights, u_seg, G_loc, elem_to_block, mins_local, maxs_local, min_node_labels, max_node_labels
 
-    # (Step 1) Choose a topological order for GPAV; LowerY often improves pooling.    # Build label-based maps Y_map_seg / W_map_seg keyed by local node labels.
+    # (Step 1) Choose a topological order for GPAV.
+    # Build label-based map Y_map_seg keyed by local node labels.
     Y_map_seg = {lbl: _val(lbl) for lbl in nodes}
-    topo = (
-        trend_following_order_lowery_fast(H_R, Y_map_seg)
-        if use_lowery
-        else list(nx.topological_sort(H_R))
-    )
-    if verbose:
-        print(f"[R{group_index}] Topological order for GPAV: {topo}")
+
+    if custom_topo is not None:
+        # User-provided linearization (labels of H_R)
+        topo = list(custom_topo)
+
+        # (Optional sanity check – cheap and avoids weird bugs)
+        node_set = set(nodes)
+        if set(topo) != node_set:
+            raise ValueError(
+                f"custom_topo for R[{group_index}] must be a permutation of the "
+                f"segment's node labels. Got {set(topo)} vs {node_set}."
+            )
+        if verbose:
+            print(f"[R{group_index}] Using custom topo order: {topo}")
+    else:
+        # Default behavior: LowerY or plain topological sort
+        topo = (
+            trend_following_order_lowery_fast(H_R, Y_map_seg)
+            if use_lowery
+            else list(nx.topological_sort(H_R))
+        )
+        if verbose:
+            print(f"[R{group_index}] Topological order for GPAV: {topo}")
+
 
     # Run GPAV on the segment (Step 2) and get the **local block list** and
     # the **block-level edges** (pre-Hasse); elem_to_block aligns elements→blocks.
@@ -302,6 +325,7 @@ def factorized_gpav_fast_parallel(
     max_workers: Optional[int] = None,
     inputs_are_reduced: bool = False,
     verbose: bool = False,
+    segment_topo_orders: Optional[List[Optional[List[NodeLabel]]]] = None,
 ) -> np.ndarray:
     """
     Factorized SB-GPAV for the lexicographic sum P = Q(R_1, ..., R_m).
@@ -319,6 +343,11 @@ def factorized_gpav_fast_parallel(
                  Only **cover** relations of Q are considered (immediate successors).
       (Step 6) Run GPAV on this global block DAG G_B.
       (Step 7) Propagate the block-level fitted values back to elements.
+    segment_topo_orders :
+        Optional list of per-segment topo orders.
+        segment_topo_orders[i] is a list of node labels of H_R_list[i],
+        giving the Topological order to use for R_i. If provided for a
+        given i, it overrides `use_lowerY_first` for that segment.
     """
     if verbose:
         print("== Operadic / Factorized SB-GPAV: start ==")
@@ -349,6 +378,13 @@ def factorized_gpav_fast_parallel(
             if verbose:
                 print(f"Reduced R[{idx}] to Hasse once.")
         H_R_list.append(H)
+
+    if segment_topo_orders is not None:
+        if len(segment_topo_orders) != len(R_subposets):
+            raise ValueError(
+                f"segment_topo_orders must have length {len(R_subposets)} "
+                f"(one per R_i), got {len(segment_topo_orders)}."
+            )
 
     # Basics & alignment for vectorized data.
     offs = _offsets_from_subposets(R_subposets)
@@ -471,6 +507,7 @@ def factorized_gpav_fast_parallel(
             use_lowery=use_lowerY_first,
             verbose=verbose,
             group_index=i,
+            custom_topo=None if segment_topo_orders is None else segment_topo_orders[i],
         )
 
         # Map local block membership (indices into local_nodes) → global
