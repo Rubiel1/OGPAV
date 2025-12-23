@@ -250,10 +250,10 @@ def _local_blocks_for_R(
 
         # (Optional sanity check – cheap and avoids weird bugs)
         node_set = set(nodes)
-        if set(topo) != node_set:
+        if len(topo) != len(nodes) or set(topo) != node_set:
             raise ValueError(
                 f"custom_topo for R[{group_index}] must be a permutation of the "
-                f"segment's node labels. Got {set(topo)} vs {node_set}."
+                f"segment's node labels. "
             )
         if verbose:
             print(f"[R{group_index}] Using custom topo order: {topo}")
