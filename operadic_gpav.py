@@ -88,6 +88,7 @@ def _local_blocks_for_R(
     *,
     use_lowery: bool = True,
     verbose: bool = False,
+    debug: bool=False,
     group_index: Optional[int] = None,
     custom_topo: Optional[List[NodeLabel]] = None,
 ) -> Tuple[
@@ -203,6 +204,8 @@ def _local_blocks_for_R(
 
         def _wt(lbl):
             return float(W_arr[int(lbl)])
+    min_node_labels = None 
+    max_node_labels = None 
 
     # (Step 2 trivial case) If the segment is size-0/1, pooling is trivial.
     if m <= 1:
@@ -218,8 +221,9 @@ def _local_blocks_for_R(
 
         mins_local = [0] if m == 1 else []
         maxs_local = [0] if m == 1 else []
-        min_node_labels = [0] if m == 1 else []
-        max_node_labels = [0] if m == 1 else []
+        if debug:
+            min_node_labels = [0] if m == 1 else []
+            max_node_labels = [0] if m == 1 else []
         return members, block_values, block_weights, u_seg, G_loc, elem_to_block, mins_local, maxs_local, min_node_labels, max_node_labels
 
     # (Step 2 fast path) Edgeless segment → already isotonic, keep singletons.
@@ -236,8 +240,9 @@ def _local_blocks_for_R(
         ids = list(range(m))
         mins_local = ids[:]
         maxs_local = ids[:]
-        min_node_labels = ids[:]    # singletons: each node is min & max
-        max_node_labels = ids[:]
+        if debug:
+            min_node_labels = ids[:]    # singletons: each node is min & max
+            max_node_labels = ids[:]
         return members, block_values, block_weights, u_seg, G_loc, elem_to_block, mins_local, maxs_local, min_node_labels, max_node_labels
 
     # (Step 1) Choose a topological order for GPAV.
@@ -303,9 +308,9 @@ def _local_blocks_for_R(
     mins_local = [n for n in G_loc.nodes if G_loc.in_degree(n) == 0]
     maxs_local = [n for n in G_loc.nodes if G_loc.out_degree(n) == 0]
 
-    # Optionally gather element-label extrema per extreme block (debugging aid).
-    min_node_labels = [lbl for b in mins_local for lbl in local_blocks[b]['min_labels']]
-    max_node_labels = [lbl for b in maxs_local for lbl in local_blocks[b]['max_labels']]
+    if debug:
+        min_node_labels = [lbl for b in mins_local for lbl in local_blocks[b]['min_labels']]
+        max_node_labels = [lbl for b in maxs_local for lbl in local_blocks[b]['max_labels']]
 
     return members, block_values, block_weights, u_seg, G_loc, elem_to_block, mins_local, maxs_local, min_node_labels, max_node_labels
 
@@ -325,6 +330,7 @@ def factorized_gpav_fast_parallel(
     max_workers: Optional[int] = None,
     inputs_are_reduced: bool = False,
     verbose: bool = False,
+    debug: bool = False,
     segment_topo_orders: Optional[List[Optional[List[NodeLabel]]]] = None,
 ) -> np.ndarray:
     """
@@ -349,6 +355,7 @@ def factorized_gpav_fast_parallel(
         giving the Topological order to use for R_i. If provided for a
         given i, it overrides `use_lowerY_first` for that segment.
     """
+    verbose = verbose or debug
     if verbose:
         print("== Operadic / Factorized SB-GPAV: start ==")
         print(f"Flags: use_lowerY_first={use_lowerY_first}, use_lowerY_blocks={use_lowerY_blocks}, "
@@ -457,9 +464,12 @@ def factorized_gpav_fast_parallel(
     G_loc_list: List[Optional[nx.DiGraph]] = [None] * len(R_subposets)
     group_min_global: List[Optional[List[int]]] = [None] * len(R_subposets)
     group_max_global: List[Optional[List[int]]] = [None] * len(R_subposets)
-    group_min_node_labels: List[Optional[List[int]]] = [None] * len(R_subposets)
-    group_max_node_labels: List[Optional[List[int]]] = [None] * len(R_subposets)
-
+    if debug:
+        group_min_node_labels: List[Optional[List[int]]] = [None] * len(R_subposets)
+        group_max_node_labels: List[Optional[List[int]]] = [None] * len(R_subposets)
+    else:
+        group_min_node_labels = None 
+        group_max_node_labels = None
     # Worker to process each R_i independently.
     def _worker(i: int):
         """
@@ -513,6 +523,7 @@ def factorized_gpav_fast_parallel(
             seg_w,
             use_lowery=use_lowerY_first,
             verbose=verbose,
+            debug= debug,
             group_index=i,
             custom_topo=None if segment_topo_orders is None else segment_topo_orders[i],
         )
@@ -579,10 +590,10 @@ def factorized_gpav_fast_parallel(
                 group_min_global[i] = [local_to_global[n] for n in mins_local]
                 group_max_global[i] = [local_to_global[n] for n in maxs_local]
 
-                # Optional debugging: remember **element labels** of local extremes in global indices.
-                off = offs[i]
-                group_min_node_labels[i] = [off + int(v) for v in min_node_labels]
-                group_max_node_labels[i] = [off + int(v) for v in max_node_labels]
+                if debug:
+                    off = offs[i]
+                    group_min_node_labels[i] = [off + int(v) for v in min_node_labels]
+                    group_max_node_labels[i] = [off + int(v) for v in max_node_labels]
 
     B = len(block_members_global)
     block_values = np.asarray(block_values, dtype=float)
@@ -616,9 +627,8 @@ def factorized_gpav_fast_parallel(
                 if verbose:
                     print(f"  Added cross edge (Q {i}->{j}): B{a} -> B{b}")
 
-    # Optional runtime verification that G_B is already transitive-reduced.
-    verify_GB_is_reduced = not inputs_are_reduced
-    if verify_GB_is_reduced and G_B.number_of_edges() > 0:
+    # Debug-only runtime verification that G_B is already transitive-reduced.
+    if debug and G_B.number_of_edges() > 0:
         GB_red = nx.transitive_reduction(G_B)
         if set(G_B.edges) != set(GB_red.edges):
             if verbose:

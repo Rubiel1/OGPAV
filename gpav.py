@@ -28,8 +28,8 @@ def _fmt_tuple_list(ls):
 
 def _print_hasse(G: nx.DiGraph, title: str = "Hasse diagram", indent: str = ""):
     print(f"{indent}{title}:")
-    print(f"{indent}  Nodes: {list(G.nodes())}")
-    print(f"{indent}  Covers (edges): {_fmt_tuple_list(list(G.edges()))}")
+    print(f"{indent}  out of {len(G.nodes())} we print the first 20 Nodes: {list(G.nodes())[:20]}")
+    print(f"{indent}  out of {len(list(G.edges()))}  Covers we print the first 20 edges: {_fmt_tuple_list(list(G.edges())[:20])}")
 
 def _print_blocks_state(blocks: Dict[int, Dict], nodes: List, indent: str = ""):
     """
@@ -116,9 +116,9 @@ FOR MNOTONIC REGRESSION".
         print(indent + f"== {name}: starting ==")
         _print_hasse(G, title=f"{name} input Hasse", indent=indent)
         print(indent + f"Node order used: {topo_labels}")
-        print(indent + f"Y aligned to nodes: {[(N[i], float(Y[i])) for i in range(n)]}")
+        print(indent + f"Y aligned (at most 20 nodes): {[(N[i], float(Y[i])) for i in range(min(n,20))]}")
         if weights is not None:
-            print(indent + f"Weights aligned: {[(N[i], float(w[i])) for i in range(n)]}")
+            print(indent + f"Weights aligned (at most 20 nodes): {[(N[i], float(w[i])) for i in range(min(n,20))]}")
         print(indent + "----")
 
     # Initialize
