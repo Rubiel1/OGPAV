@@ -4,7 +4,7 @@ import networkx as nx
 import numpy as np
 
 try:
-    import hasse  # optional if you pass an nx.DiGraph directly
+    import hasse  # optional
 except Exception:
     hasse = None
 
@@ -14,8 +14,9 @@ except Exception:
 
 def _hasse_graph(poset):
     """
-    poset: either an nx.DiGraph representing a Hasse diagram (covers), or 
-    an object with .hasse attribute/method returning an nx.DiGraph
+    Inputs:
+        poset: either an nx.DiGraph representing a Hasse diagram (covers), or 
+        an object with .hasse attribute/method returning an nx.DiGraph
     """
     if isinstance(poset, nx.DiGraph):
         return poset
@@ -70,32 +71,35 @@ def gpav_seg(
     indent: str = ""
 ) -> Tuple[np.ndarray, List[Dict], np.ndarray]:
     """
-    Generalized Pool Adjacent Violators over a partial order from "DATA PREORDERING IN GENERALIZED PAV ALGORITHM
-    FOR MNOTONIC REGRESSION".
+    Generalized Pool Adjacent Violators over a partial order from paper
+    "DATA PREORDERING IN GENERALIZED PAV ALGORITHM FOR MNOTONIC REGRESSION".
     Inputs:
 
-    Y: 1D array-like of values to regress.
-    If len(Y) == n, interpreted as already aligned with N = list(G.nodes()).
-    Otherwise it tries Y[v] for each node label v in N (mapping-like).
+        Y: 1D array-like of values to regress.
+        If len(Y) == n, interpreted as already aligned with N = list(G.nodes()).
+        Otherwise it tries Y[v] for each node label v in N (mapping-like).
 
-    poset: poset / Hasse diagram (same conventions as _hasse_graph)
+        poset: poset / Hasse diagram (same conventions as _hasse_graph)
 
-    topo_order: list of node labels specifying the processing order; if None, uses nx.topological_sort(G)
+        topo_order: list of node labels specifying the processing order; 
+        if None, uses nx.topological_sort(G)
 
-    weights: optional 1D array-like weights
-    If None, uses all-ones
-    If length n, aligned with N
-    Else tries weights[v] by label (mapping-like)
+        weights: optional 1D array-like weights
+        If None, uses all-ones
+        If length n, aligned with N
+        Else tries weights[v] by label (mapping-like)
 
-    verbose: print debug logs
+        verbose: print debug logs
 
-    name: label used in debug printing
+        name: label used in debug printing
 
-    indent: indentation prefix for debug printing
+        indent: indentation prefix for debug printing
+    
     Returns:
-      u : fitted values aligned to internal node order
-      block_list : each dict has {'elements': [local ids], 'weight': float, 'value': float}
-      elem_to_block : LOCAL element index -> final block id
+      
+        u : fitted values aligned to internal node order
+        block_list : each dict has {'elements': [local ids], 'weight': float, 'value': float}
+        elem_to_block : LOCAL element index -> final block id
     """
     G = _hasse_graph(poset)
     N = list(G.nodes())
@@ -251,7 +255,7 @@ def gpav_seg(
 
 
 # ---------------------------------------------------------------------
-# GPAV algorithm for operadic GPAV
+# GPAV algorithm for paper operadic GPAV
 # ---------------------------------------------------------------------
 def gpav_op(
     Y: Union[np.ndarray, Dict],
@@ -265,32 +269,23 @@ def gpav_op(
     return_block_edges: bool = False,
 ) -> Tuple[np.ndarray, List[Dict], np.ndarray]:
     """
-    Generalized Pool Adjacent Violators over a partial order from
-    "DATA PREORDERING IN GENERALIZED PAV ALGORITHM FOR MONOTONIC REGRESSION".
-
-    This variant is designed to be label-aware.
-
-    Conceptually:
-
-      * The input data `Y` is a mapping from **poset node labels** to values.
-        You may pass this either as:
-          - a 1D NumPy array (or array-like) already aligned with the internal
-            Hasse node order, or
-          - a dictionary `{label -> value}` keyed by the node labels of `poset`.
-
-      * Optional `weights` behave similarly:
-          - 1D array-like aligned with the Hasse node order, or
-          - dict `{label -> weight}` keyed by node labels.
-
-    Internally, the function builds a node list `N = list(G.nodes())` from the
-    Hasse diagram `G` of the given `poset`, and aligns the numeric arrays so
-    that index `i` corresponds to label `N[i]`.
 
     Parameters
     ----------
     Y :
         1D array-like or dict keyed by poset node labels. The values to be
         isotonic-regressed.
+        The input data `Y` is a mapping from poset node labels to values.
+        You may pass this either as:
+          - a dictionary `{label -> value}` keyed by the node labels of `poset`.
+
+          - a 1D NumPy array (or array-like) already aligned with the internal
+            Hasse node order, this option is not recommended. Internally, the 
+            function builds a node list `N = list(G.nodes())` from the
+            Hasse diagram `G` of the given `poset`, and aligns the numeric arrays so
+            that index `i` corresponds to label `N[i]`. But sometimes this depends
+            on the order in which the node `i` was added to the poset.
+
     poset :
         Either a `hasse.PoSet` instance or a `networkx.DiGraph` representing
         the Hasse diagram of the partial order.
@@ -316,12 +311,12 @@ def gpav_op(
         (i.e., `u[i]` corresponds to node label `N[i]`).
     block_list : List[Dict]
         Each dict has (at least) the keys:
-          - 'elements': list of LOCAL indices (0..n-1),
+          - 'elements': list of local indices (0..n-1),
           - 'labels'  : list of corresponding node labels,
           - 'weight'  : total block weight,
           - 'value'   : block value.
     elem_to_block : np.ndarray
-        LOCAL element index -> final block id.
+        Local element index -> final block id.
     """
     G = _hasse_graph(poset)
     N = list(G.nodes())
@@ -341,7 +336,6 @@ def gpav_op(
     else:
         Y = np.asarray(Y)
         if Y.ndim == 0:
-            # np.asarray(scalar) gives shape (), which caused your IndexError
             raise ValueError(
                 "Y must be a 1D array-like or a dict keyed by node labels, not a scalar."
             )
@@ -407,7 +401,6 @@ def gpav_op(
     blocks: Dict[int, Dict] = {}
     current_block_of = {i: i for i in range(n)}  # element -> current head
 
-    # Sweep
     for k in topo: # change j to k
         # Create singleton block for j
         blocks[k] = {
@@ -473,7 +466,7 @@ def gpav_op(
             if verbose:
                 _print_blocks_state(blocks, N, indent=indent + "    ")
 
-        # Keep only existing heads (if part is for safety)
+        # Keep only existing heads
         blocks[k]['children_k'] = set(h for h in B_k_minus if h in blocks)
         
     # Assemble outputs (LOCAL indexing 0..n-1)
@@ -551,72 +544,7 @@ def gpav_op(
                 if RA & set(block_max_idx_list[b]):
                     block_edges.append((a, b))
 
-    # #to edit
-    # preds = [{node_to_idx[p] for p in G.predecessors(N[i])} for i in range(n)]
-    # succs = [{node_to_idx[s] for s in G.successors(N[i])} for i in range(n)]
-    # # Assemble outputs (LOCAL indexing 0..n-1)
-    # u = np.zeros(n, dtype=float)
-    # block_list: List[Dict] = []
-    # elem_to_block = np.empty(n, dtype=int)
-
-    # block_min_idx_list: List[List[int]] = []   # ADDED: local indices per block
-    # block_max_idx_list: List[List[int]] = []   # ADDED: local indices per block
-    # for head, b in blocks.items(): # b are the elements of the dictionary; head, the index
-
-    #     b_id = len(block_list)
-
-    #     S = set(b['elements'])
-    #     _min_idx = [i for i in b['elements'] if not (preds[i] & S)]
-    #     _max_idx = [i for i in b['elements'] if not (succs[i] & S)]
-    #     _min_labels = [idx_to_node[i] for i in _min_idx]
-    #     _max_labels = [idx_to_node[i] for i in _max_idx]
-    #     block_min_idx_list.append(_min_idx)   # ADDED
-    #     block_max_idx_list.append(_max_idx)   # ADDED
-        
-    #     block_list.append({
-    #         'elements': list(b['elements']),
-    #         'labels': [idx_to_node[x] for x in b['elements']],
-    #         'weight': float(b['weight']),
-    #         'value': float(b['value']),
-    #         'min_labels': _min_labels,
-    #         'max_labels': _max_labels,
-    #     }) # We copy the blocks without the children
-    #     for e in b['elements']:
-    #         u[e] = b['value']
-    #         elem_to_block[e] = b_id
-
-    # transl = {N[i]: float(u[i]) for i in range(n)}
-
-    # # ADDED: compute local block edges via Min–Max reachability on the local graph
-    # block_edges: List[Tuple[int, int]] = []
-    # if block_min_idx_list and block_max_idx_list:
-    #     reach_cache: Dict[int, set] = {}
-
-    #     def _reach_from(s: int) -> set:
-    #         R = reach_cache.get(s)
-    #         if R is not None:
-    #             return R
-    #         R = set()
-    #         stack = [s]
-    #         while stack:
-    #             u_ = stack.pop()
-    #             for v_ in succs[u_]:
-    #                 if v_ not in R:
-    #                     R.add(v_); stack.append(v_)
-    #         reach_cache[s] = R
-    #         return R
-
-    #     B_ = len(block_min_idx_list)
-    #     for a in range(B_):
-    #         if not block_min_idx_list[a]:
-    #             continue
-    #         RA = set().union(*(_reach_from(m) for m in block_min_idx_list[a])) if block_min_idx_list[a] else set()
-    #         for b in range(B_):
-    #             if a == b or not block_max_idx_list[b]:
-    #                 continue
-    #             if RA & set(block_max_idx_list[b]):
-    #                 block_edges.append((a, b))
-
+ 
     if verbose:
         print(indent + f"== {name}: finished ==")
         print(indent + "Final blocks:")
