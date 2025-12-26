@@ -452,28 +452,37 @@ def gpav_op(
         # Keep only existing heads (if part is for safety)
         blocks[k]['children_k'] = set(h for h in B_k_minus if h in blocks)
         
-
-    preds = [{node_to_idx[p] for p in G.predecessors(N[i])} for i in range(n)]
-    succs = [{node_to_idx[s] for s in G.successors(N[i])} for i in range(n)]
     # Assemble outputs (LOCAL indexing 0..n-1)
     u = np.zeros(n, dtype=float)
     block_list: List[Dict] = []
     elem_to_block = np.empty(n, dtype=int)
 
-    block_min_idx_list: List[List[int]] = []   # ADDED: local indices per block
-    block_max_idx_list: List[List[int]] = []   # ADDED: local indices per block
-    for head, b in blocks.items(): # b are the elements of the dictionary; head, the index
+    # Only compute these heavy structures if the caller requested block edges.
+    if return_block_edges:
+        preds = [{node_to_idx[p] for p in G.predecessors(N[i])} for i in range(n)]
+        succs = [{node_to_idx[s] for s in G.successors(N[i])} for i in range(n)]
+        block_min_idx_list: List[List[int]] = []
+        block_max_idx_list: List[List[int]] = []
+    else:
+        preds = succs = None  # type: ignore
+        block_min_idx_list = block_max_idx_list = None  # type: ignore
 
+    for head, b in blocks.items():
         b_id = len(block_list)
 
-        S = set(b['elements'])
-        _min_idx = [i for i in b['elements'] if not (preds[i] & S)]
-        _max_idx = [i for i in b['elements'] if not (succs[i] & S)]
-        _min_labels = [idx_to_node[i] for i in _min_idx]
-        _max_labels = [idx_to_node[i] for i in _max_idx]
-        block_min_idx_list.append(_min_idx)   # ADDED
-        block_max_idx_list.append(_max_idx)   # ADDED
-        
+        # Only compute min/max labels when needed for block-edge recovery
+        if return_block_edges:
+            S = set(b['elements'])
+            _min_idx = [i for i in b['elements'] if not (preds[i] & S)]
+            _max_idx = [i for i in b['elements'] if not (succs[i] & S)]
+            _min_labels = [idx_to_node[i] for i in _min_idx]
+            _max_labels = [idx_to_node[i] for i in _max_idx]
+            block_min_idx_list.append(_min_idx)
+            block_max_idx_list.append(_max_idx)
+        else:
+            _min_labels = []
+            _max_labels = []
+
         block_list.append({
             'elements': list(b['elements']),
             'labels': [idx_to_node[x] for x in b['elements']],
@@ -481,16 +490,15 @@ def gpav_op(
             'value': float(b['value']),
             'min_labels': _min_labels,
             'max_labels': _max_labels,
-        }) # We copy the blocks without the children
+        })
+
         for e in b['elements']:
             u[e] = b['value']
             elem_to_block[e] = b_id
 
-    transl = {N[i]: float(u[i]) for i in range(n)}
-
-    # ADDED: compute local block edges via Min–Max reachability on the local graph
+    # Compute local block edges only if requested
     block_edges: List[Tuple[int, int]] = []
-    if block_min_idx_list and block_max_idx_list:
+    if return_block_edges and block_min_idx_list and block_max_idx_list:
         reach_cache: Dict[int, set] = {}
 
         def _reach_from(s: int) -> set:
@@ -503,7 +511,8 @@ def gpav_op(
                 u_ = stack.pop()
                 for v_ in succs[u_]:
                     if v_ not in R:
-                        R.add(v_); stack.append(v_)
+                        R.add(v_)
+                        stack.append(v_)
             reach_cache[s] = R
             return R
 
@@ -511,12 +520,78 @@ def gpav_op(
         for a in range(B_):
             if not block_min_idx_list[a]:
                 continue
-            RA = set().union(*(_reach_from(m) for m in block_min_idx_list[a])) if block_min_idx_list[a] else set()
+            RA = set().union(*(_reach_from(m) for m in block_min_idx_list[a]))
             for b in range(B_):
                 if a == b or not block_max_idx_list[b]:
                     continue
                 if RA & set(block_max_idx_list[b]):
                     block_edges.append((a, b))
+
+    # #to edit
+    # preds = [{node_to_idx[p] for p in G.predecessors(N[i])} for i in range(n)]
+    # succs = [{node_to_idx[s] for s in G.successors(N[i])} for i in range(n)]
+    # # Assemble outputs (LOCAL indexing 0..n-1)
+    # u = np.zeros(n, dtype=float)
+    # block_list: List[Dict] = []
+    # elem_to_block = np.empty(n, dtype=int)
+
+    # block_min_idx_list: List[List[int]] = []   # ADDED: local indices per block
+    # block_max_idx_list: List[List[int]] = []   # ADDED: local indices per block
+    # for head, b in blocks.items(): # b are the elements of the dictionary; head, the index
+
+    #     b_id = len(block_list)
+
+    #     S = set(b['elements'])
+    #     _min_idx = [i for i in b['elements'] if not (preds[i] & S)]
+    #     _max_idx = [i for i in b['elements'] if not (succs[i] & S)]
+    #     _min_labels = [idx_to_node[i] for i in _min_idx]
+    #     _max_labels = [idx_to_node[i] for i in _max_idx]
+    #     block_min_idx_list.append(_min_idx)   # ADDED
+    #     block_max_idx_list.append(_max_idx)   # ADDED
+        
+    #     block_list.append({
+    #         'elements': list(b['elements']),
+    #         'labels': [idx_to_node[x] for x in b['elements']],
+    #         'weight': float(b['weight']),
+    #         'value': float(b['value']),
+    #         'min_labels': _min_labels,
+    #         'max_labels': _max_labels,
+    #     }) # We copy the blocks without the children
+    #     for e in b['elements']:
+    #         u[e] = b['value']
+    #         elem_to_block[e] = b_id
+
+    # transl = {N[i]: float(u[i]) for i in range(n)}
+
+    # # ADDED: compute local block edges via Min–Max reachability on the local graph
+    # block_edges: List[Tuple[int, int]] = []
+    # if block_min_idx_list and block_max_idx_list:
+    #     reach_cache: Dict[int, set] = {}
+
+    #     def _reach_from(s: int) -> set:
+    #         R = reach_cache.get(s)
+    #         if R is not None:
+    #             return R
+    #         R = set()
+    #         stack = [s]
+    #         while stack:
+    #             u_ = stack.pop()
+    #             for v_ in succs[u_]:
+    #                 if v_ not in R:
+    #                     R.add(v_); stack.append(v_)
+    #         reach_cache[s] = R
+    #         return R
+
+    #     B_ = len(block_min_idx_list)
+    #     for a in range(B_):
+    #         if not block_min_idx_list[a]:
+    #             continue
+    #         RA = set().union(*(_reach_from(m) for m in block_min_idx_list[a])) if block_min_idx_list[a] else set()
+    #         for b in range(B_):
+    #             if a == b or not block_max_idx_list[b]:
+    #                 continue
+    #             if RA & set(block_max_idx_list[b]):
+    #                 block_edges.append((a, b))
 
     if verbose:
         print(indent + f"== {name}: finished ==")

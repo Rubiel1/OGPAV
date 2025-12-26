@@ -137,4 +137,4 @@ class TestClass:
             inputs_are_reduced=False,
             verbose=True,
         )#[]
-        assert  np.array_equal(u,v)
+        assert  np.array_equal(u,v), "error, the orden of the inputs when creating the list Y or the poset afects the internal order, independently of the label"
