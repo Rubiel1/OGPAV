@@ -138,3 +138,33 @@ class TestClass:
             verbose=True,
         )#[]
         assert  np.array_equal(u,v), "error, the orden of the inputs when creating the list Y or the poset afects the internal order, independently of the label"
+    def test_linearization_op(self):
+        poset = hasse.PoSet.from_chains([0,1,2])
+        R_subposets = [
+            hasse.PoSet.from_chains([0]),#orden global 0
+            hasse.PoSet.from_chains([0,3],[1,4],[2,5],[0,4],[1,5],[2,3],[0,5],[1,3],[2,4]),#orden global 1,2,3
+            hasse.PoSet.from_chains([0]),#orden global 7
+        ]
+        Y = [1,7,3,9,5,6,10,4]
+        Y_map = {i: float(y) for i, y in enumerate(Y)}
+        u = factorized_gpav_fast_parallel(
+            Q=poset,
+            R_subposets=R_subposets,
+            A=Y_map,
+            use_lowerY_first=True,
+            use_lowerY_blocks=True,
+            inputs_are_reduced=False,
+            verbose=True,
+            segment_topo_orders=[[0],[2,1,0,3,4,5],[0]],
+        )#[]
+        v = factorized_gpav_fast_parallel(
+            Q=poset,
+            R_subposets=R_subposets,
+            A=Y_map,
+            use_lowerY_first=True,
+            use_lowerY_blocks=True,
+            inputs_are_reduced=False,
+            verbose=True,
+            segment_topo_orders=[[0],[2,1,0,4,3,5],[0]],
+        )#[]
+        assert  np.array_equal(u,v), "error with user provided linearizations"
