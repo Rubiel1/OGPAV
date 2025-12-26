@@ -1,26 +1,23 @@
 # -*- coding: utf-8 -*-
 """
-edition of operadic_gpav.py.
-This version adds `verbose` flags.
-
 ============================== BIG-PICTURE (7 STEPS) ==============================
 This file implements the "operadic GPAV" strategy for the
 lexicographic sum P = Q(R_1, ..., R_m). 
 
 1) Inputs (Q and a list of subposets R_i).  We run a local GPAV on each R_i.
-2) For each R_i, GPAV computes *blocks* (pooled elements with a common value)
+2) For each R_i, GPAV computes blocks (pooled elements with a common value)
    and the block averages/weights.
-3) For each R_i, we also build the *block-poset* poset(GPAV(R_i)) as a Hasse
+3) For each R_i, we also build the block-poset poset(GPAV(R_i)) as a Hasse
    (cover-relation) DAG between those blocks.
-4) For each R_i, we identify the *extreme* blocks of that block-poset:
+4) For each R_i, we identify the extreme blocks of that block-poset:
    minima and maxima (by in/out-degree in the local Hasse DAG).  We also keep
    their element-label lists for optional debugging.
-5) Stage 2 assembly: Create a *global block DAG* G_B. Nodes are **all** blocks
+5) Stage 2 assembly: Create a global block DAG G_B. Nodes are all blocks
    from all R_i. Add two kinds of edges:
-   (i) **Intra**: insert all intra-R_i block Hasse edges.
-   (ii) **Inter**: for each **cover** edge i→j in Hasse(Q), connect every
-        **maximal** block of R_i to every **minimal** block of R_j.
-   This yields a graph that is **already** a transitive reduction (a Hasse) by
+   (i) Intra: insert all intra-R_i block Hasse edges.
+   (ii) Inter: for each cover edge i->j in Hasse(Q), connect every
+        maximal block of R_i to every minimal block of R_j.
+   This yields a graph that is already a transitive reduction (a Hasse) by
    construction.
 6) Run GPAV again, now on G_B using block averages/weights. This produces the
    block-level fitted values u_blocks.
@@ -36,8 +33,8 @@ import networkx as nx
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import hasse
 
-# NOTE: The algorithm expects GPAV with block-returns and a LowerY ordering helper.
-from segmented_gpav import trend_following_order_lowery_fast
+# NOTE: The algorithm expects GPAV with block-returns and a Trend-Following ordering helper.
+from segmented_gpav import trend_following_order
 from gpav import gpav_op as gpav
 import warnings
 # --- Aliases---
@@ -52,7 +49,7 @@ BlockId = int              # index of a block in a block-level DAG
 
 def _offsets_from_subposets(R_subposets: List[hasse.PoSet]) -> List[int]:
     """Compute contiguous offsets so that the concatenation of R_i element-sets
-    maps to [0..N-1].  This is only indexing bookkeeping; it does **not** touch
+    maps to [0..N-1].  This is only indexing bookkeeping; it does not touch
     the order structure.
     """
     offs = []
@@ -66,7 +63,7 @@ def _offsets_from_subposets(R_subposets: List[hasse.PoSet]) -> List[int]:
 def as_reduced_hasse(poset_or_graph) -> nx.DiGraph:
     """Return the Hasse diagram (transitive reduction) of a DAG.
     Accepts either a PoSet-like object with `.hasse` (property or method)
-    or a raw nx.DiGraph. Call this **once** per input; do not use inside hot loops.
+    or a raw nx.DiGraph. Call this once per input.
     """
     H = getattr(poset_or_graph, "hasse", poset_or_graph)
     G = H() if callable(H) else H
@@ -86,7 +83,7 @@ def _local_blocks_for_R(
     A_seg,
     W_seg,
     *,
-    use_lowery: bool = True,
+    use_trend_following: bool = True,
     verbose: bool = False,
     debug: bool=False,
     group_index: Optional[int] = None,
@@ -119,11 +116,11 @@ def _local_blocks_for_R(
            dict {local_label -> value} keyed by the node labels of H_R.
     custom_topo :
         Optional user-provided topological order (list of node labels of H_R).
-        If given, this is passed as `topo_order` to `gpav` and `use_lowery`
+        If given, this is passed as `topo_order` to `gpav` and `use_trend_following`
         is ignored for this segment.
-    use_lowery : bool
+    use_trend_following : bool
         If custom_topo is None, controls how the topological order for GPAV is chosen:
-            True: use trend_following_order_lowery_fast(H_R, Y_map_seg) 
+            True: use trend_following_order(H_R, Y_map_seg) 
             (“LowerY” / trend-following linear extension).
             False: use nx.topological_sort(H_R).
 
@@ -138,7 +135,7 @@ def _local_blocks_for_R(
     Returns:
 
       - members:
-          list of blocks, each as a list of LOCAL indices in 0..m-1.
+          list of blocks, each as a list of local indices in 0..m-1.
           Local index j means "the j-th entry in nodes = list(H_R.nodes())".
 
       - block_values:
@@ -241,7 +238,7 @@ def _local_blocks_for_R(
             max_node_labels = [0] if m == 1 else []
         return members, block_values, block_weights, u_seg, G_loc, elem_to_block, mins_local, maxs_local, min_node_labels, max_node_labels
 
-    # (Step 2 fast path) Edgeless segment → already isotonic, keep singletons.
+    # (Step 2 fast path) Edgeless segment -> already isotonic, keep singletons.
     if H_R.number_of_edges() == 0:
         if verbose:
             print(f"[R{group_index}] Edgeless segment. Skipping GPAV; returning singletons.")
@@ -268,7 +265,7 @@ def _local_blocks_for_R(
         # User-provided linearization (labels of H_R)
         topo = list(custom_topo)
 
-        # (Optional sanity check – cheap and avoids weird bugs)
+        # (Optional sanity check)
         node_set = set(nodes)
         if len(topo) != len(nodes) or set(topo) != node_set:
             raise ValueError(
@@ -280,16 +277,16 @@ def _local_blocks_for_R(
     else:
         # Default behavior: LowerY or plain topological sort
         topo = (
-            trend_following_order_lowery_fast(H_R, Y_map_seg)
-            if use_lowery
+            trend_following_order(H_R, Y_map_seg)
+            if use_trend_following
             else list(nx.topological_sort(H_R))
         )
         if verbose:
             print(f"[R{group_index}] Topological order for GPAV: {topo}")
 
 
-    # Run GPAV on the segment (Step 2) and get the **local block list** and
-    # the **block-level edges** (pre-Hasse); elem_to_block aligns elements→blocks.
+    # Run GPAV on the segment (Step 2) and get the local block list and
+    # the block-level edges (pre-Hasse); elem_to_block aligns elements->blocks.
     W_map_seg = {lbl: _wt(lbl) for lbl in nodes}
     u_seg, local_blocks, elem_to_block, block_edges = gpav(
         Y_map_seg, H_R, topo_order=topo, weights=W_map_seg, return_block_edges=True)
@@ -309,7 +306,7 @@ def _local_blocks_for_R(
         for k, (mem, val, wt) in enumerate(zip(members, block_values, block_weights)):
             print(f"  - B{k} members={mem}, av={val:.6g}, w={wt:.6g}")
 
-    # (Step 3) Build the **block-poset** for this segment and Hasse-reduce it.
+    # (Step 3) Build the block-poset for this segment and Hasse-reduce it.
     G_loc = nx.DiGraph(); G_loc.add_nodes_from(range(len(members)))
     for a, b in block_edges:
         if a != b:
@@ -334,14 +331,14 @@ def _local_blocks_for_R(
 # Main: factorized SB-GPAV for lexicographic sum
 # -------------------------
 
-def factorized_gpav_fast_parallel(
+def OGPAV(
     Q: hasse.PoSet,
     R_subposets: List[hasse.PoSet],
     A: np.ndarray | Dict[int, float],
     weights: Optional[np.ndarray | Dict[int, float]] = None,
     *,
-    use_lowerY_first: bool = True,
-    use_lowerY_blocks: bool = True,
+    use_trend_following_first: bool = True,
+    use_trend_following_blocks: bool = True,
     max_workers: Optional[int] = None,
     inputs_are_reduced: bool = False,
     verbose: bool = False,
@@ -354,14 +351,14 @@ def factorized_gpav_fast_parallel(
     Stage 1 (parallel):
       (Step 1) For each i, run GPAV on R_i using its Hasse H_Ri.
       (Step 2) Keep the local blocks and their block averages/weights.
-      (Step 3) Build the *local block-poset* (Hasse) for each R_i.
+      (Step 3) Build the local block-poset (Hasse) for each R_i.
       (Step 4) Record local minima/maxima blocks for later cross-wiring.
 
     Stage 2 (assemble, Hasse by construction):
-      (Step 5.i) Start with the disjoint union of all **intra**-R_i block Hasse edges.
-      (Step 5.ii) For each **cover** edge i→j in Hasse(Q), add edges from
-                 every **maximal** block of R_i to every **minimal** block of R_j.
-                 Only **cover** relations of Q are considered (immediate successors).
+      (Step 5.i) Start with the disjoint union of all intra-R_i block Hasse edges.
+      (Step 5.ii) For each cover edge i->j in Hasse(Q), add edges from
+                 every maximal block of R_i to every minimal block of R_j.
+                 Only cover relations of Q are considered (immediate successors).
       (Step 6) Run GPAV on this global block DAG G_B.
       (Step 7) Propagate the block-level fitted values back to elements.
 
@@ -395,13 +392,13 @@ def factorized_gpav_fast_parallel(
     If None, all weights default to 1.0.
     If a dict, missing keys default to weight 1.0 (via weights.get(i, 1.0)).
 
-    use_lowerY_first : bool
+    use_trend_following_first : bool
     Controls the local ordering used for GPAV inside each input R_i when an order
     is not explicitly provided via segment_topo_orders[i].
-        True: use trend_following_order_lowery_fast (LowerY / trend-following order).
+        True: use trend_following_order (LowerY / trend-following order).
         False: use a plain topological sort of H_Ri.
 
-    use_lowerY_blocks : bool
+    use_trend_following_blocks : bool
     Controls the ordering used for GPAV on the global block DAG G_B in Stage 2.
     True: use LowerY order on G_B based on the current block averages.
     False: use nx.topological_sort(G_B).
@@ -424,9 +421,9 @@ def factorized_gpav_fast_parallel(
     Optional per-input R_i explicit processing orders.
     If provided, must have length len(R_subposets).
     segment_topo_orders[i] is either:
-        None: no override; local order is chosen by use_lowerY_first, or
+        None: no override; local order is chosen by use_trend_following_first, or
         a list of node labels of H_R_list[i]: explicit topological order used for fiber R_i, 
-        overriding use_lowerY_first for that fiber.
+        overriding use_trend_following_first for that fiber.
 
     Returns
 
@@ -438,12 +435,12 @@ def factorized_gpav_fast_parallel(
     This is obtained by solving GPAV on each fiber, then GPAV on the induced global block DAG, 
     and finally propagating block-level fits back to atoms.  
     
-    
+
     """
     verbose = verbose or debug
     if verbose:
         print("== Operadic / Factorized SB-GPAV: start ==")
-        print(f"Flags: use_lowerY_first={use_lowerY_first}, use_lowerY_blocks={use_lowerY_blocks}, "
+        print(f"Flags: use_trend_following_first={use_trend_following_first}, use_trend_following_blocks={use_trend_following_blocks}, "
               f"inputs_are_reduced={inputs_are_reduced}")
         print(f"Q nodes={len(Q)}, #R={len(R_subposets)}, |A|={len(A)}")
         if weights is not None:
@@ -484,10 +481,10 @@ def factorized_gpav_fast_parallel(
 
     # ------------------------------------------------------------------
     # Global data model:
-    #   * There are N "atoms" in the lexicographic sum P = Q(R_0,...,R_{m-1}).
-    #   * We treat their labels as integers 0..N-1.
-    #   * A_array[g] is the observed value at global label g.
-    #   * W_array[g] is the weight at global label g.
+    #   There are N nodes in the lexicographic sum P = Q(R_0,...,R_{m-1}).
+    #   We treat their labels as integers 0..N-1.
+    #   A_array[g] is the observed value at global label g.
+    #   W_array[g] is the weight at global label g.
     #
     # The mapping "which global label belongs to which fiber R_i" is
     # controlled solely by `offs` (these offsets are contiguous sums
@@ -558,10 +555,10 @@ def factorized_gpav_fast_parallel(
     # Worker to process each R_i independently.
     def _worker(i: int):
         """
-        Process one fiber R_i:
-          * Build label-based segment maps from the global arrays.
-          * Run local GPAV to obtain blocks and segment fits.
-          * Map local block membership to global element indices.
+        Process one R_i:
+          Build label-based segment maps from the global arrays.
+          Run local GPAV to obtain blocks and segment fits.
+          Map local block membership to global element indices.
         """
         H_R = H_R_list[i]
         offset = offs[i]
@@ -575,8 +572,8 @@ def factorized_gpav_fast_parallel(
         # Build label-based segment dictionaries from the GLOBAL arrays.
         #
         # Convention:
-        #   - Each local label ℓ is assumed to be an integer in 0..m_i-1.
-        #   - The corresponding GLOBAL label is (offset + ℓ).
+        #   Each local label l is assumed to be an integer in 0..m_i-1.
+        #   The corresponding GLOBAL label is (offset + l).
         #
         # A_array[g] / W_array[g] are the canonical global value/weight vectors.
         seg_vals = {
@@ -606,14 +603,14 @@ def factorized_gpav_fast_parallel(
             H_R,
             seg_vals,
             seg_w,
-            use_lowery=use_lowerY_first,
+            use_trend_following=use_trend_following_first,
             verbose=verbose,
             debug= debug,
             group_index=i,
             custom_topo=None if segment_topo_orders is None else segment_topo_orders[i],
         )
 
-        # Map local block membership (indices into local_nodes) → global
+        # Map local block membership (indices into local_nodes) -> global
         # element indices 0..N-1.
         #
         # LOCAL index j refers to the element whose label is local_nodes[j].
@@ -655,10 +652,10 @@ def factorized_gpav_fast_parallel(
                 block_weights.append(float(wts[k]))
                 block_group.append(i)
 
-            # Build mapping local_block_id → global_block_id for this group.
+            # Build mapping local_block_id -> global_block_id for this group.
             local_to_global = {k: start_idx + k for k in range(len(members_g))}
 
-            # Store intra-group block Hasse edges in **global** coordinates (Step 3).
+            # Store intra-group block Hasse edges in global coordinates (Step 3).
             if G_loc.number_of_nodes() > 0:
                 G_loc_global = nx.DiGraph(); G_loc_global.add_nodes_from(local_to_global.values())
                 for u, v in G_loc.edges:
@@ -694,15 +691,15 @@ def factorized_gpav_fast_parallel(
         print("Stage 2 — Assemble block DAG G_B (Hasse by construction).")
     G_B = nx.DiGraph(); G_B.add_nodes_from(range(B))
 
-    # (Step 5.i) Add **intra-group** block Hasse edges.
+    # (Step 5.i) Add intra-group block Hasse edges.
     for gi, G_loc_g in enumerate(G_loc_list):
         if G_loc_g is not None:
             G_B.add_edges_from(G_loc_g.edges)
             if verbose and G_loc_g.number_of_edges() > 0:
                 print(f"  Added intra-group edges from R{gi}: {list(G_loc_g.edges)}")
 
-    # (Step 5.ii) Add **inter-group** edges: for each Hasse(Q) cover i→j, add
-    # edges from every **max** block of R_i to every **min** block of R_j.
+    # (Step 5.ii) Add inter-group edges: for each Hasse(Q) cover i->j, add
+    # edges from every max block of R_i to every min block of R_j.
     for i, j in H_Q.edges:
         max_i = group_max_global[i] or []
         min_j = group_min_global[j] or []
@@ -723,9 +720,9 @@ def factorized_gpav_fast_parallel(
             print("Verified: G_B equals its transitive reduction.")
 
     # (Step 6) Choose a block-level order, then run GPAV on the block DAG.
-    if use_lowerY_blocks:
+    if use_trend_following_blocks:
         block_vals_map = {b: float(block_values[b]) for b in G_B.nodes()}
-        TB = trend_following_order_lowery_fast(G_B, block_vals_map)
+        TB = trend_following_order(G_B, block_vals_map)
         if verbose:
             print(f"Block-level order (LowerY): {TB}")
     else:
@@ -772,12 +769,12 @@ if __name__ == "__main__":
     print(f"Input data: {Y}")
     print(f"Q hasse edges: {[ (x,y) for x in range(len(poset)) for y in poset.hasse.successors(x) ]}")
     Y_map = {i: float(y) for i, y in enumerate(Y)}
-    u = factorized_gpav_fast_parallel(
+    u = OGPAV(
         Q=poset,
         R_subposets=R_subposets,
         A=Y_map,
-        use_lowerY_first=True,
-        use_lowerY_blocks=True,
+        use_trend_following_first=True,
+        use_trend_following_blocks=True,
         inputs_are_reduced=False,
         verbose=True,
     )
@@ -787,7 +784,7 @@ if __name__ == "__main__":
     print("\n=== Example 2: plain GPAV on a small poset (verbose) ===")
     posetx = hasse.PoSet.from_chains([0, 6], [0, 7, 8], [1, 6], [1, 7], [1, 3, 4], [2, 6], [2, 7], [2, 3, 5])
     Y_map2 = {i: float(y) for i, y in enumerate(Y)}
-    order = trend_following_order_lowery_fast(poset=posetx, Y=Y_map2)
+    order = trend_following_order(poset=posetx, Y=Y_map2)
     print(f"LowerY order: {order}")
     u_gpav, _, _ = gpav(Y_map2, posetx, order, verbose=True, name="GPAV(direct)")
     print("Adjusted values (gpav):", u_gpav)

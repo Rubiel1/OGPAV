@@ -85,12 +85,12 @@ def _print_block_list(all_blocks: List[List], av: List[float], wt: List[float], 
 
 
 # ---------------------------------------------------------------------
-# LowerY (trend-following) topological order — heap-based
+# Trend-following topological order
 # ---------------------------------------------------------------------
 
-def trend_following_order_lowery_fast(poset, Y: np.ndarray) -> List:
+def trend_following_order(poset, Y: np.ndarray) -> List:
     """
-    Algorithm 4 (LowerY) from "A Segmentation-Based Algorithm for Large-Scale
+    Algorithm 4 from "A Segmentation-Based Algorithm for Large-Scale
     Partially Ordered Monotonic Regression".
     
     At each step:
@@ -190,7 +190,7 @@ def segmentation_based_gpav(
 
     use_trend_following_first: currently “kept for API parity”; T is already passed, so this flag isn’t selecting T in your current code
 
-    use_trend_following_blocks: if True uses LowerY on the block DAG, else uses nx.topological_sort(G_B)
+    use_trend_following_blocks: if True uses trend-following order on the block DAG, else uses nx.topological_sort(G_B)
 
     verbose: prints everything (currently prints full lists—this is what you flagged as too big)
     
@@ -313,7 +313,7 @@ def segmentation_based_gpav(
     # Choose block-level order TB
     Y_B = np.asarray(block_values, dtype=float)
     if use_trend_following_blocks:
-        TB_labels = trend_following_order_lowery_fast(_BlockGraphPoset(G_B), Y_B)
+        TB_labels = trend_following_order(_BlockGraphPoset(G_B), Y_B)
     else:
         TB_labels = list(nx.topological_sort(G_B))
     if verbose:
@@ -378,7 +378,7 @@ if __name__ == "__main__":
     Y_aligned = np.array([Y_map[v] for v in nodes], dtype=float)
 
     # A topological order T 
-    T = trend_following_order_lowery_fast(G, Y_aligned)# list(nx.topological_sort(G))
+    T = trend_following_order(G, Y_aligned)# list(nx.topological_sort(G))
 
     print("\n=== DEMO: gpav on full graph ===")
     u, block_list, _ = gpav(Y_aligned, G, topo_order=T, verbose=True)
@@ -422,21 +422,21 @@ def _align_any_by_label_or_nodeorder(_obj, _nodes, _name, _default=None):
 def _map_array_to_labeldict(_nodes, _arr):
     return {int(v): float(_arr[i]) for i, v in enumerate(_nodes)}
 
-# ---- trend_following_order_lowery_fast ----
+# ---- trend_following_order ----
 try:
-    _old_trend_following_order_lowery_fast = trend_following_order_lowery_fast  # type: ignore[name-defined]
+    _old_trend_following_order = trend_following_order  # type: ignore[name-defined]
 except NameError:
-    _old_trend_following_order_lowery_fast = None
+    _old_trend_following_order = None
 
-if _old_trend_following_order_lowery_fast is not None:
-    def trend_following_order_lowery_fast(poset, Y, *args, **kwargs):
+if _old_trend_following_order is not None:
+    def trend_following_order(poset, Y, *args, **kwargs):
         """
         Public wrapper: accepts dict {label:value} or array aligned to Hasse node order.
-        Returns a LowerY topological order; delegates to the original implementation.
+        Returns a trend following topological order; delegates to the original implementation.
         """
         nodes = _nodes_in_hasse_for_labeldict(poset)
         Y_arr = _align_any_by_label_or_nodeorder(Y, nodes, "Y")
-        return _old_trend_following_order_lowery_fast(poset=poset, Y=Y_arr, *args, **kwargs)
+        return _old_trend_following_order(poset=poset, Y=Y_arr, *args, **kwargs)
 
 # ---- gpav ----
 try:
