@@ -39,7 +39,7 @@ import hasse
 # NOTE: The algorithm expects GPAV with block-returns and a LowerY ordering helper.
 from segmented_gpav import trend_following_order_lowery_fast
 from gpav import gpav_op as gpav
-
+import warnings
 # --- Aliases---
 NodeLabel = Hashable       # label of a node in a poset (local or global)
 LocalIndex = int           # index 0..m_i-1 within a fiber R_i (position in nodes list)
@@ -404,6 +404,13 @@ def factorized_gpav_fast_parallel(
     if isinstance(A, dict):
         A_array = np.array([float(A[i]) for i in range(N)], dtype=float)
     else:
+        warnings.warn(
+        "A was provided as a sequence/array. GPAV assumes A[i] corresponds to internal index "
+        "i=0..N-1 (the internal concatenation order). If your A is keyed by node labels or a "
+        "different ordering, pass a dict-like mapping to avoid misalignment.",
+        category=UserWarning,
+        stacklevel=2,
+        )
         A_array = np.asarray(A, dtype=float)
     if A_array.ndim != 1:
         raise ValueError(f"A must be 1D; got shape {A_array.shape!r}")
