@@ -41,6 +41,10 @@ except Exception:
 # ---------------------------------------------------------------------
 
 def _hasse_graph(poset):
+    """
+    poset: either an nx.DiGraph representing a Hasse diagram (covers), or 
+    an object with .hasse attribute/method returning an nx.DiGraph
+    """
     if isinstance(poset, nx.DiGraph):
         return poset
     h = getattr(poset, "hasse", None)
@@ -53,7 +57,12 @@ def _hasse_graph(poset):
 
 def _induced_hasse(G: nx.DiGraph, nodes):
     """
-    Induce on `nodes` and re-reduce (induction can introduce transitives).
+    Inputs:
+    G: original Hasse diagram
+
+    nodes: subset of node labels
+
+    Returns a transitive reduction of the induced subgraph.
     """
     H = G.subgraph(list(nodes)).copy()
     return nx.transitive_reduction(H)
@@ -82,12 +91,17 @@ def _print_block_list(all_blocks: List[List], av: List[float], wt: List[float], 
 def trend_following_order_lowery_fast(poset, Y: np.ndarray) -> List:
     """
     Algorithm 4 (LowerY) from "A Segmentation-Based Algorithm for Large-Scale
-Partially Ordered Monotonic Regression".
-
+    Partially Ordered Monotonic Regression".
+    
     At each step:
       - among current minimal elements (in-degree 0 w.r.t. remaining nodes),
         pick the one with smallest Y.
+    Inputs
 
+    poset: poset / graph
+
+    Y: array-like aligned with nodes = list(G.nodes()), or mapping Y[v]
+    
     Returns a list of node labels (not local indices).
     """
     G = _hasse_graph(poset)
@@ -161,8 +175,25 @@ def segmentation_based_gpav(
 ) -> np.ndarray:
     """
     Implementation of the Segmentation-Based algorithm (Algorithm 3 A Segmentation-Based Algorithm for Large-Scale
-Partially Ordered Monotonic Regression).
+    Partially Ordered Monotonic Regression).
+    Inputs:
 
+    poset: original poset / graph
+
+    Y: values (array-like aligned with nodes or mapping Y[v])
+
+    T: a global topological order as labels
+
+    weights: optional weights aligned by node order or mapping
+
+    segment_size: segment length (how many nodes per local GPAV)
+
+    use_trend_following_first: currently “kept for API parity”; T is already passed, so this flag isn’t selecting T in your current code
+
+    use_trend_following_blocks: if True uses LowerY on the block DAG, else uses nx.topological_sort(G_B)
+
+    verbose: prints everything (currently prints full lists—this is what you flagged as too big)
+    
     Returns:
       u_final : fitted values aligned to `poset.hasse().nodes()` order.
     """

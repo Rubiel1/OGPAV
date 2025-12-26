@@ -13,12 +13,17 @@ except Exception:
 # ---------------------------------------------------------------------
 
 def _hasse_graph(poset):
+    """
+    poset: either an nx.DiGraph representing a Hasse diagram (covers), or 
+    an object with .hasse attribute/method returning an nx.DiGraph
+    """
     if isinstance(poset, nx.DiGraph):
         return poset
     h = getattr(poset, "hasse", None)
     if h is None:
         raise AttributeError("Expected a PoSet with a `.hasse` attribute/method.")
-    G = h() if callable(h) else h
+    G = h() if callable(h) else h #G: the extracted directed graph (Hasse diagram)
+
     if not isinstance(G, nx.DiGraph):
         raise TypeError("`.hasse` must yield a networkx.DiGraph.")
     return G
@@ -66,8 +71,27 @@ def gpav_seg(
 ) -> Tuple[np.ndarray, List[Dict], np.ndarray]:
     """
     Generalized Pool Adjacent Violators over a partial order from "DATA PREORDERING IN GENERALIZED PAV ALGORITHM
-FOR MNOTONIC REGRESSION".
+    FOR MNOTONIC REGRESSION".
+    Inputs:
 
+    Y: 1D array-like of values to regress.
+    If len(Y) == n, interpreted as already aligned with N = list(G.nodes()).
+    Otherwise it tries Y[v] for each node label v in N (mapping-like).
+
+    poset: poset / Hasse diagram (same conventions as _hasse_graph)
+
+    topo_order: list of node labels specifying the processing order; if None, uses nx.topological_sort(G)
+
+    weights: optional 1D array-like weights
+    If None, uses all-ones
+    If length n, aligned with N
+    Else tries weights[v] by label (mapping-like)
+
+    verbose: print debug logs
+
+    name: label used in debug printing
+
+    indent: indentation prefix for debug printing
     Returns:
       u : fitted values aligned to internal node order
       block_list : each dict has {'elements': [local ids], 'weight': float, 'value': float}

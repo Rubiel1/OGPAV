@@ -106,7 +106,36 @@ def _local_blocks_for_R(
     """
     === Implements Steps 1–4 for a single R_i ===
 
-    Run GPAV on one fiber R_i (given by its Hasse diagram H_R) and return:
+    Run GPAV on one input R_i and return:
+
+    Parameters
+    ----------
+    H_R :
+        Hasse diagram of the input poset R_i.
+    A_seg, W_seg :
+        Either
+           1D array-like, interpreted as A_seg[j] / W_seg[j] for label j
+            (labels are assumed to be integers 0..m-1), or
+           dict {local_label -> value} keyed by the node labels of H_R.
+    custom_topo :
+        Optional user-provided topological order (list of node labels of H_R).
+        If given, this is passed as `topo_order` to `gpav` and `use_lowery`
+        is ignored for this segment.
+    use_lowery : bool
+        If custom_topo is None, controls how the topological order for GPAV is chosen:
+            True: use trend_following_order_lowery_fast(H_R, Y_map_seg) 
+            (“LowerY” / trend-following linear extension).
+            False: use nx.topological_sort(H_R).
+
+    verbose : bool
+       If True, print progress and local diagnostic information for this fiber
+        (segment size, chosen topo order, number of blocks, block summary, and local block Hasse edges).
+
+    group_index : Optional[int]
+        Index i of the fiber R_i within the lexicographic sum. Used only for labeling debug output;
+         does not affect computation.
+    
+    Returns:
 
       - members:
           list of blocks, each as a list of LOCAL indices in 0..m-1.
@@ -133,21 +162,7 @@ def _local_blocks_for_R(
           in G_loc (by in/out-degree).
 
       - min_node_labels / max_node_labels:
-          lists of underlying element labels inside those extreme blocks.
-
-    Parameters
-    ----------
-    H_R :
-        Hasse diagram of the fiber poset R_i.
-    A_seg, W_seg :
-        Either
-          * 1D array-like, interpreted as A_seg[j] / W_seg[j] for label j
-            (labels are assumed to be integers 0..m-1), or
-          * dict {local_label -> value} keyed by the node labels of H_R.
-    custom_topo :
-        Optional user-provided topological order (list of node labels of H_R).
-        If given, this is passed as `topo_order` to `gpav` and `use_lowery`
-        is ignored for this segment.
+          These are local node labels (labels from H_R), not global indices.
     """
     # Local node labels and count
     nodes = list(H_R.nodes())
@@ -349,11 +364,81 @@ def factorized_gpav_fast_parallel(
                  Only **cover** relations of Q are considered (immediate successors).
       (Step 6) Run GPAV on this global block DAG G_B.
       (Step 7) Propagate the block-level fitted values back to elements.
-    segment_topo_orders :
-        Optional list of per-segment topo orders.
-        segment_topo_orders[i] is a list of node labels of H_R_list[i],
-        giving the Topological order to use for R_i. If provided for a
-        given i, it overrides `use_lowerY_first` for that segment.
+
+
+    Parameters (add this block)
+
+    Q : hasse.PoSet The “outer” poset Q with m = len(R_subposets) elements, in the lexicographic sum 
+    P=Q(R1,…,Rm)
+    The code uses its Hasse diagram H_Q (cover relations). 
+    If inputs_are_reduced=False, it reduces Q once via as_reduced_hasse.
+
+    R_subposets : List[hasse.PoSet]
+    List [R_0, ..., R_{m-1}] of input posets. Each R_i is run independently in Stage 1 
+    (potentially in parallel).
+
+    The total number of “inputs” in the lexicographic sum is N = sum(len(R_i)).
+
+    A : np.ndarray | Dict[int, float]
+    The observed values on the vertices of the lexicographic sum.
+
+    If a dict, it is interpreted as {global_index -> value} for global_index in 0..N-1, 
+    and is converted into A_array in that order.
+
+    If an array/sequence, it is interpreted as already aligned with the internal 
+    concatenation order 0..N-1 (This option is discouraged since it is possible that 
+    the internal order is the order of input of the vertices, not the label).
+
+    weights : Optional[np.ndarray | Dict[int, float]]
+
+    Optional weights per node (same indexing convention as A).
+    If None, all weights default to 1.0.
+    If a dict, missing keys default to weight 1.0 (via weights.get(i, 1.0)).
+
+    use_lowerY_first : bool
+    Controls the local ordering used for GPAV inside each input R_i when an order
+    is not explicitly provided via segment_topo_orders[i].
+        True: use trend_following_order_lowery_fast (LowerY / trend-following order).
+        False: use a plain topological sort of H_Ri.
+
+    use_lowerY_blocks : bool
+    Controls the ordering used for GPAV on the global block DAG G_B in Stage 2.
+    True: use LowerY order on G_B based on the current block averages.
+    False: use nx.topological_sort(G_B).
+
+    max_workers : Optional[int]
+    Passed to ThreadPoolExecutor(max_workers=...).
+    Controls the maximum number of worker threads used to process fibers R_i in parallel.
+    If None, Python chooses a default.
+
+    inputs_are_reduced : bool
+    If False (default), the code reduces Q and each R_i to their Hasse diagrams once 
+    using as_reduced_hasse.
+    If True, the code assumes the user already supplied Hasse diagrams 
+    for Q and all R_i, and skips reductions.
+
+    verbose : bool
+    If True, prints progress messages and diagnostic summaries for both stages.
+    
+    segment_topo_orders : Optional[List[Optional[List[NodeLabel]]]]
+    Optional per-input R_i explicit processing orders.
+    If provided, must have length len(R_subposets).
+    segment_topo_orders[i] is either:
+        None: no override; local order is chosen by use_lowerY_first, or
+        a list of node labels of H_R_list[i]: explicit topological order used for fiber R_i, 
+        overriding use_lowerY_first for that fiber.
+
+    Returns
+
+    u_final : np.ndarray
+    1D NumPy array of length N = sum(len(R_i)).
+    u_final[g] is the fitted isotonic regression value for global atom index g 
+    (where indexing is the internal concatenation order induced by R_subposets offsets).
+
+    This is obtained by solving GPAV on each fiber, then GPAV on the induced global block DAG, 
+    and finally propagating block-level fits back to atoms.  
+    
+    
     """
     verbose = verbose or debug
     if verbose:
