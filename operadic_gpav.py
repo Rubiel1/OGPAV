@@ -121,7 +121,7 @@ def _local_blocks_for_R(
     use_trend_following : bool
         If custom_topo is None, controls how the topological order for GPAV is chosen:
             True: use trend_following_order(H_R, Y_map_seg) 
-            (“LowerY” / trend-following linear extension).
+            ( trend-following linear extension).
             False: use nx.topological_sort(H_R).
 
     verbose : bool
@@ -273,16 +273,16 @@ def _local_blocks_for_R(
                 f"segment's node labels. "
             )
         if verbose:
-            print(f"[R{group_index}] Using custom topo order: {topo}")
+            print(f"[R{group_index}] Using custom topo order (first 20 entries): {topo[:20]}")
     else:
-        # Default behavior: LowerY or plain topological sort
+        # Default behavior: Trend_following or plain topological sort
         topo = (
             trend_following_order(H_R, Y_map_seg)
             if use_trend_following
             else list(nx.topological_sort(H_R))
         )
         if verbose:
-            print(f"[R{group_index}] Topological order for GPAV: {topo}")
+            print(f"[R{group_index}] Topological order for GPAV (20 entries): {topo[:20]}")
 
 
     # Run GPAV on the segment (Step 2) and get the local block list and
@@ -314,7 +314,7 @@ def _local_blocks_for_R(
     if G_loc.number_of_edges() > 0:
         G_loc = nx.transitive_reduction(G_loc)
     if verbose:
-        print(f"[R{group_index}] Local block Hasse edges: {list(G_loc.edges)}")
+        print(f"[R{group_index}] Local block Hasse edges (first 20): {list(G_loc.edges)[:20]}")
 
     # (Step 4) Identify extrema in the local block-poset.
     mins_local = [n for n in G_loc.nodes if G_loc.in_degree(n) == 0]
@@ -395,12 +395,12 @@ def OGPAV(
     use_trend_following_first : bool
     Controls the local ordering used for GPAV inside each input R_i when an order
     is not explicitly provided via segment_topo_orders[i].
-        True: use trend_following_order (LowerY / trend-following order).
+        True: use trend_following_order (trend-following order).
         False: use a plain topological sort of H_Ri.
 
     use_trend_following_blocks : bool
     Controls the ordering used for GPAV on the global block DAG G_B in Stage 2.
-    True: use LowerY order on G_B based on the current block averages.
+    True: use trend_following order on G_B based on the current block averages.
     False: use nx.topological_sort(G_B).
 
     max_workers : Optional[int]
@@ -696,7 +696,7 @@ def OGPAV(
         if G_loc_g is not None:
             G_B.add_edges_from(G_loc_g.edges)
             if verbose and G_loc_g.number_of_edges() > 0:
-                print(f"  Added intra-group edges from R{gi}: {list(G_loc_g.edges)}")
+                print(f"  Added intra-group edges from R{gi} (at most 20): {list(G_loc_g.edges)[:20]}")
 
     # (Step 5.ii) Add inter-group edges: for each Hasse(Q) cover i->j, add
     # edges from every max block of R_i to every min block of R_j.
@@ -724,11 +724,11 @@ def OGPAV(
         block_vals_map = {b: float(block_values[b]) for b in G_B.nodes()}
         TB = trend_following_order(G_B, block_vals_map)
         if verbose:
-            print(f"Block-level order (LowerY): {TB}")
+            print(f"Block-level order : {TB[:20]}")
     else:
         TB = list(nx.topological_sort(G_B))
         if verbose:
-            print(f"Block-level order (topological): {TB}")
+            print(f"Block-level order (topological): {TB[:20]}")
 
     if verbose:
         print("Run GPAV on block DAG...")
@@ -745,8 +745,8 @@ def OGPAV(
         print("Final per-block values:")
         for b_idx, val in enumerate(u_blocks):
             print(f"  B{b_idx}: u={float(val):.6g}")
-        print("Propagate back to original indices (first 50 shown):")
-        preview = [(i, float(u_final[i])) for i in range(min(len(u_final), 50))]
+        print("Propagate back to original indices (first 20 shown):")
+        preview = [(i, float(u_final[i])) for i in range(min(len(u_final), 20))]
         print(f"  {preview}")
         print("== Operadic / Factorized SB-GPAV: finished ==")
 
@@ -785,6 +785,6 @@ if __name__ == "__main__":
     posetx = hasse.PoSet.from_chains([0, 6], [0, 7, 8], [1, 6], [1, 7], [1, 3, 4], [2, 6], [2, 7], [2, 3, 5])
     Y_map2 = {i: float(y) for i, y in enumerate(Y)}
     order = trend_following_order(poset=posetx, Y=Y_map2)
-    print(f"LowerY order: {order}")
+    print(f"Trend_following order: {order}")
     u_gpav, _, _ = gpav(Y_map2, posetx, order, verbose=True, name="GPAV(direct)")
     print("Adjusted values (gpav):", u_gpav)
