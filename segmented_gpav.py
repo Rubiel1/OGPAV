@@ -254,6 +254,10 @@ def segmentation_based_gpav(
                 if found:
                     break
 
+    # Remove redundant edges (Algorithm 2)
+    if G_B.number_of_edges() > 0:
+        G_B = nx.transitive_reduction(G_B)
+
     if verbose:
         _print_hasse(G_B, title="Block DAG G_B", indent="  ")
 
@@ -349,6 +353,15 @@ def _nodes_in_hasse_for_labeldict(_poset):
     return list(G.nodes())
 
 
+def _graph_in_hasse_for_wrappers(_poset):
+    """Hasse-first: if _poset is a PoSet, use its hasse graph; if user insists, allow nx.DiGraph."""
+    if isinstance(_poset, nx.DiGraph):
+        return _poset
+    G = _hasse_graph(_poset)
+    if not isinstance(G, nx.DiGraph):
+        raise TypeError("poset.hasse() must return a networkx.DiGraph")
+    return G
+
 def _align_map_by_label(_map_like, _nodes, _name, _default=None):
     if not isinstance(_map_like, _Mapping):
         raise TypeError(f"{_name} must be a dict mapping node labels to values.")
@@ -367,7 +380,8 @@ def _align_any_by_label_or_nodeorder(_obj, _nodes, _name, _default=None):
     return arr.astype(float, copy=False)
 
 def _map_array_to_labeldict(_nodes, _arr):
-    return {int(v): float(_arr[i]) for i, v in enumerate(_nodes)}
+    return {v: float(_arr[i]) for i, v in enumerate(_nodes)}
+    #return {int(v): float(_arr[i]) for i, v in enumerate(_nodes)}
 
 # ---- trend_following_order ----
 try:
@@ -381,9 +395,14 @@ if _old_trend_following_order is not None:
         Public wrapper: accepts dict {label:value} or array aligned to Hasse node order.
         Returns a trend following topological order; delegates to the original implementation.
         """
-        nodes = _nodes_in_hasse_for_labeldict(poset)
+        G = _graph_in_hasse_for_wrappers(poset)
+        nodes = list(G.nodes())
         Y_arr = _align_any_by_label_or_nodeorder(Y, nodes, "Y")
-        return _old_trend_following_order(poset, Y_arr, *args, **kwargs)
+        # Underlying implementation expects a nx.DiGraph as first argument.
+        return _old_trend_following_order(G, Y_arr, *args, **kwargs)
+        #nodes = _nodes_in_hasse_for_labeldict(poset)
+        #Y_arr = _align_any_by_label_or_nodeorder(Y, nodes, "Y")
+        #return _old_trend_following_order(poset, Y_arr, *args, **kwargs)
 
 # ---- gpav ----
 try:
@@ -401,8 +420,8 @@ if _old_gpav is not None:
         nodes = _nodes_in_hasse_for_labeldict(poset)
         Y_arr = _align_any_by_label_or_nodeorder(Y, nodes, "Y")
         w_arr = None if weights is None else _align_any_by_label_or_nodeorder(weights, nodes, "weights", _default=1.0)
-
-        res = _old_gpav(Y_arr, poset, topo_order, weights=w_arr, *args, **kwargs)
+        res = _old_gpav(Y_arr, poset, topo_order=topo_order, weights=w_arr, *args, **kwargs)
+        #res = _old_gpav(Y_arr, poset, topo_order, weights=w_arr, *args, **kwargs)
 
         if return_dict:
             if isinstance(res, tuple):
@@ -423,17 +442,25 @@ except NameError:
     _old_segmentation_based_gpav = None
 
 if _old_segmentation_based_gpav is not None:
-    def segmentation_based_gpav(poset, Y, weights=None, return_dict=False, *args, **kwargs):
+    def segmentation_based_gpav(poset, Y, T=None, weights=None, return_dict=False, *args, **kwargs):
+        #def segmentation_based_gpav(poset, Y, weights=None, return_dict=False, *args, **kwargs):
         """
         Public wrapper: accepts dict {label:value} or array aligned to Hasse node order.
         Keeps output identical to the original unless return_dict=True, in which case
-        the leading 'u' array is converted to {label: value}.
+        the leading 'u' array is converted to {label: value}.  If T is None, compute
++         a trend-following topological order on the Hasse graph
         """
-        nodes = _nodes_in_hasse_for_labeldict(poset)
+        G = _graph_in_hasse_for_wrappers(poset)
+        nodes = list(G.nodes())
+        #nodes = _nodes_in_hasse_for_labeldict(poset)
         Y_arr = _align_any_by_label_or_nodeorder(Y, nodes, "Y")
         w_arr = None if weights is None else _align_any_by_label_or_nodeorder(weights, nodes, "weights", _default=1.0)
 
-        res = _old_segmentation_based_gpav(poset, Y_arr, weights=w_arr, *args, **kwargs)
+        #res = _old_segmentation_based_gpav(poset, Y_arr, weights=w_arr, *args, **kwargs)
+        if T is None:
+            # Compute a trend-following topological order on the Hasse graph.
+            T = trend_following_order(G, Y_arr)
+        res = _old_segmentation_based_gpav(poset, Y_arr, T, weights=w_arr, *args, **kwargs)
 
         if return_dict:
             if isinstance(res, tuple):
