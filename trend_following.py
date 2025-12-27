@@ -1,10 +1,12 @@
 from __future__ import annotations
 from typing import Dict, Hashable, Iterable, List, Tuple
 import networkx as nx
+from typing import Union
+import numpy as np
 
 def trend_following_order(
     G: nx.DiGraph,
-    Y: Dict[Hashable, float],
+    Y: Union[Dict[Hashable, float], np.ndarray],
     *,
     stable_tiebreak: bool = True,
 ) -> List[Hashable]:
@@ -31,12 +33,19 @@ def trend_following_order(
 
     # --- 0) Basic checks
     if not nx.is_directed_acyclic_graph(G):
-        raise ValueError("G must be a DAG for LowerY.")
+        raise ValueError("G must be a DAG for trend following order.")
 
     nodes = list(G.nodes())
     m = len(nodes)
     if m == 0:
         return []
+
+    # accept aligned array
+    if not isinstance(Y, dict):
+        Y_arr = np.asarray(Y, dtype=float)
+        if Y_arr.shape[0] != m:
+            raise ValueError(f"Y array must have length {m}, got {Y_arr.shape[0]}")
+        Y = {nodes[i]: float(Y_arr[i]) for i in range(m)}  # convert to dict once
 
     # Ensure all nodes have a Y-value
     missing = [v for v in nodes if v not in Y]

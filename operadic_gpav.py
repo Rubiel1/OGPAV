@@ -784,7 +784,7 @@ if __name__ == "__main__":
     print("\n=== Example 2: plain GPAV on a small poset (verbose) ===")
     posetx = hasse.PoSet.from_chains([0, 6], [0, 7, 8], [1, 6], [1, 7], [1, 3, 4], [2, 6], [2, 7], [2, 3, 5])
     Y_map2 = {i: float(y) for i, y in enumerate(Y)}
-    order = trend_following_order(poset=posetx, Y=Y_map2)
+    order = trend_following_order(posetx, Y_map2)
     print(f"Trend_following order: {order}")
     u_gpav, _, _ = gpav(Y_map2, posetx, order, verbose=True, name="GPAV(direct)")
     print("Adjusted values (gpav):", u_gpav)
