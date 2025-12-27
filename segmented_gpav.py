@@ -29,7 +29,7 @@ import heapq
 import numpy as np
 import networkx as nx
 from gpav import gpav_seg as gpav
-
+from trend_following import trend_following_order
 try:
     import hasse  # optional if you pass an nx.DiGraph directly
 except Exception:
@@ -84,59 +84,6 @@ def _print_block_list(all_blocks: List[List], av: List[float], wt: List[float], 
         print(f"{indent}B{i}: members={members}, av={v:.6g}, weight={w:.6g}")
 
 
-# ---------------------------------------------------------------------
-# Trend-following topological order
-# ---------------------------------------------------------------------
-
-def trend_following_order(poset, Y: np.ndarray) -> List:
-    """
-    Algorithm 4 from "A Segmentation-Based Algorithm for Large-Scale
-    Partially Ordered Monotonic Regression".
-    
-    At each step:
-      - among current minimal elements (in-degree 0 w.r.t. remaining nodes),
-        pick the one with smallest Y.
-    Inputs
-
-    poset: poset / graph
-
-    Y: array-like aligned with nodes = list(G.nodes()), or mapping Y[v]
-    
-    Returns a list of node labels (not local indices).
-    """
-    G = _hasse_graph(poset)
-    nodes = list(G.nodes())
-    n = len(nodes)
-
-    Y = np.asarray(Y)
-    if Y.shape[0] != n:
-        try:
-            Y = np.array([Y[v] for v in nodes], dtype=float)
-        except Exception as e:
-            raise ValueError("Y must align with poset node labels or with the Hasse node order.") from e
-    else:
-        Y = Y.astype(float, copy=False)
-
-    node_to_idx = {v: i for i, v in enumerate(nodes)}
-    indeg = np.fromiter((G.in_degree(v) for v in nodes), dtype=np.int32, count=n)
-    succ = [[node_to_idx[w] for w in G.successors(v)] for v in nodes]
-
-    heap = [(Y[i], i) for i in range(n) if indeg[i] == 0]
-    heapq.heapify(heap)
-
-    order_idx = []
-    while heap:
-        _, i = heapq.heappop(heap)
-        order_idx.append(i)
-        for j in succ[i]:
-            indeg[j] -= 1
-            if indeg[j] == 0:
-                heapq.heappush(heap, (Y[j], j))
-
-    if len(order_idx) != n:
-        raise ValueError("Cycle detected in poset (unexpected).")
-
-    return [nodes[i] for i in order_idx]
 
 # ---------------------------------------------------------------------
 # Segmentation-based algorithm

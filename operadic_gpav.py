@@ -34,7 +34,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import hasse
 
 # NOTE: The algorithm expects GPAV with block-returns and a Trend-Following ordering helper.
-from segmented_gpav import trend_following_order
+from trend_following import trend_following_order
 from gpav import gpav_op as gpav
 import warnings
 # --- Aliases---
