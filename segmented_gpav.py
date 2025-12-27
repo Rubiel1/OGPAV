@@ -383,7 +383,7 @@ if _old_trend_following_order is not None:
         """
         nodes = _nodes_in_hasse_for_labeldict(poset)
         Y_arr = _align_any_by_label_or_nodeorder(Y, nodes, "Y")
-        return _old_trend_following_order(poset=poset, Y=Y_arr, *args, **kwargs)
+        return _old_trend_following_order(poset, Y_arr, *args, **kwargs)
 
 # ---- gpav ----
 try:
