@@ -1,8 +1,8 @@
 from __future__ import annotations
-from typing import Dict, Hashable, Iterable, List, Tuple
+from typing import Dict, Hashable, Iterable, List, Tuple, Union
 import networkx as nx
-from typing import Union
 import numpy as np
+#import heapq
 
 def trend_following_order(
     G: nx.DiGraph,
@@ -133,51 +133,51 @@ def trend_following_order(
 # topological order
 # ---------------------------------------------------------------------
 
-def Kahn_order(poset, Y: np.ndarray) -> List:
-    """
-    Candidate order
+# def Kahn_order(poset, Y: np.ndarray) -> List:
+#     """
+#     Candidate order
     
-    At each step:
-      - among current minimal elements (in-degree 0 w.r.t. remaining nodes),
-        pick the one with smallest Y.
-    Inputs
+#     At each step:
+#       - among current minimal elements (in-degree 0 w.r.t. remaining nodes),
+#         pick the one with smallest Y.
+#     Inputs
 
-    poset: poset / graph
+#     poset: poset / graph
 
-    Y: array-like aligned with nodes = list(G.nodes()), or mapping Y[v]
+#     Y: array-like aligned with nodes = list(G.nodes()), or mapping Y[v]
     
-    Returns a list of node labels (not local indices).
-    """
-    G = _hasse_graph(poset)
-    nodes = list(G.nodes())
-    n = len(nodes)
+#     Returns a list of node labels (not local indices).
+#     """
+#     G = _hasse_graph(poset)
+#     nodes = list(G.nodes())
+#     n = len(nodes)
 
-    Y = np.asarray(Y)
-    if Y.shape[0] != n:
-        try:
-            Y = np.array([Y[v] for v in nodes], dtype=float)
-        except Exception as e:
-            raise ValueError("Y must align with poset node labels or with the Hasse node order.") from e
-    else:
-        Y = Y.astype(float, copy=False)
+#     Y = np.asarray(Y)
+#     if Y.shape[0] != n:
+#         try:
+#             Y = np.array([Y[v] for v in nodes], dtype=float)
+#         except Exception as e:
+#             raise ValueError("Y must align with poset node labels or with the Hasse node order.") from e
+#     else:
+#         Y = Y.astype(float, copy=False)
 
-    node_to_idx = {v: i for i, v in enumerate(nodes)}
-    indeg = np.fromiter((G.in_degree(v) for v in nodes), dtype=np.int32, count=n)
-    succ = [[node_to_idx[w] for w in G.successors(v)] for v in nodes]
+#     node_to_idx = {v: i for i, v in enumerate(nodes)}
+#     indeg = np.fromiter((G.in_degree(v) for v in nodes), dtype=np.int32, count=n)
+#     succ = [[node_to_idx[w] for w in G.successors(v)] for v in nodes]
 
-    heap = [(Y[i], i) for i in range(n) if indeg[i] == 0]
-    heapq.heapify(heap)
+#     heap = [(Y[i], i) for i in range(n) if indeg[i] == 0]
+#     heapq.heapify(heap)
 
-    order_idx = []
-    while heap:
-        _, i = heapq.heappop(heap)
-        order_idx.append(i)
-        for j in succ[i]:
-            indeg[j] -= 1
-            if indeg[j] == 0:
-                heapq.heappush(heap, (Y[j], j))
+#     order_idx = []
+#     while heap:
+#         _, i = heapq.heappop(heap)
+#         order_idx.append(i)
+#         for j in succ[i]:
+#             indeg[j] -= 1
+#             if indeg[j] == 0:
+#                 heapq.heappush(heap, (Y[j], j))
 
-    if len(order_idx) != n:
-        raise ValueError("Cycle detected in poset (unexpected).")
+#     if len(order_idx) != n:
+#         raise ValueError("Cycle detected in poset (unexpected).")
 
-    return [nodes[i] for i in order_idx]
+#     return [nodes[i] for i in order_idx]
