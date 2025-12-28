@@ -108,18 +108,22 @@ def gpav_seg(
     idx_to_node = dict(enumerate(N))
 
     # Align Y
-    Y = np.asarray(Y)
-    if Y.shape[0] != n:
-        try:
-            Y = np.array([Y[v] for v in N], dtype=float)
-        except Exception as e:
-            raise ValueError("Y must align with poset node labels or Hasse node order.") from e
+
+    if isinstance(Y, dict):
+        Y = np.array([Y[v] for v in N], dtype=float)
     else:
-        Y = Y.astype(float, copy=False)
+        Y = np.asarray(Y, dtype=float)
+        if Y.ndim != 1 or Y.shape[0] != n:
+            try:
+                Y = np.array([Y[v] for v in N], dtype=float)
+            except Exception as e:
+                raise ValueError("Could not align Y with poset nodes") from e
 
     # Align weights
     if weights is None:
         w = np.ones(n, dtype=float)
+    elif isinstance(weights, dict):
+        w = np.array([weights[v] for v in N], dtype=float)
     else:
         weights = np.asarray(weights)
         if weights.shape[0] != n:
