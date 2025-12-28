@@ -1,4 +1,4 @@
-from segmented_gpav import trend_following_order
+from trend_following import trend_following_order
 from operadic_gpav import OGPAV
 from gpav import gpav_op, gpav_seg
 import networkx as nx
