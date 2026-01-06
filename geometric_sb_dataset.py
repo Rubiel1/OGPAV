@@ -376,21 +376,52 @@ def plot_geometry(
     q = np.asarray(data["q_points"])
     X = np.asarray(data["X"])
     r_i = np.asarray(data["r_i"])
-
+    R_list = data["R_points_list"]
     fig, ax = plt.subplots(figsize=figsize)
-    if X.size:
-        ax.scatter(X[:, 0], X[:, 1], s=10, alpha=0.7, label="x points (⋃ R_i)")
-    ax.scatter(q[:, 0], q[:, 1], s=60, marker="x", label="q centers (Q)")
+    #if X.size:
+    #    ax.scatter(X[:, 0], X[:, 1], s=10, alpha=0.7, label="x points (⋃ R_i)")
+    #ax.scatter(q[:, 0], q[:, 1], s=60, marker="x", label="q centers (Q)")
 
     for i in range(q.shape[0]):
-        circ = Circle((q[i, 0], q[i, 1]), r_i[i], fill=False, linewidth=1.0, alpha=0.7)
+        circ = Circle(
+        (q[i, 0], q[i, 1]),
+        r_i[i],
+        fill=False,
+        edgecolor="black",
+        linewidth=2.5,      # thicker
+        alpha=0.9,
+        zorder=1            # behind points
+        )
         ax.add_patch(circ)
         if show_r_labels:
             ax.text(q[i, 0] + r_i[i], q[i, 1] + r_i[i], f"r={r_i[i]:.3g}", fontsize=8)
+    for i, Ri in enumerate(R_list):
+        if Ri is None or len(Ri) == 0:
+            continue
 
+        ax.scatter(
+            Ri[:, 0], Ri[:, 1],
+            s=40,
+            color="tab:blue",
+            edgecolor="white",
+            linewidth=0.6,
+            zorder=3,   # above circles
+        )
+    ax.scatter(
+        q[:, 0], q[:, 1],
+        s=70,
+        marker="x",
+        color="tab:red",
+        linewidths=1.0,
+        zorder=4,
+        label="q centers (Q)",
+    )
     ax.set_aspect("equal", adjustable="box")
-    ax.set_xlim(min(0, q[:, 0].min() - 1), max(100, q[:, 0].max() + 1))
-    ax.set_ylim(min(0, q[:, 1].min() - 1), max(100, q[:, 1].max() + 1))
+    pad = 1.0
+    ax.set_xlim(q[:, 0].min() - pad, q[:, 0].max() + pad)
+    ax.set_ylim(q[:, 1].min() - pad, q[:, 1].max() + pad)
+    #ax.set_xlim(min(0, q[:, 0].min() - 1), max(100, q[:, 0].max() + 1))
+    #ax.set_ylim(min(0, q[:, 1].min() - 1), max(100, q[:, 1].max() + 1))
     ax.set_title("Q centers, fibers, and radius disks")
     ax.legend(loc="best")
     ax.grid(True, linewidth=0.3, alpha=0.4)
