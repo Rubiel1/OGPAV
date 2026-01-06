@@ -168,3 +168,18 @@ class TestClass:
             segment_topo_orders=[[0],[2,1,0,4,3,5],[0]],
         )#[]
         assert  np.array_equal(u,v), "error with user provided linearizations"
+    def test_gpavs_op(self):
+        posetcito = hasse.PoSet.from_chains([0,1,2,4],[1,3])
+        Y = [0,10,11,0,-2]
+        Y_map = {i: float(y) for i, y in enumerate(Y)}
+        ordentopo= [0,1,2,3,4]
+        u,_,_ = gpav_op(Y=Y_map,
+                    poset=posetcito,
+                    topo_order= ordentopo,
+                    )#[]
+        v,_,_ = gpav_seg(Y=Y_map,
+                     poset=posetcito,
+                     topo_order = ordentopo
+        )#[]
+        assert  (u[0]<=u[1])&(u[1]<=u[2])&(u[2]<=u[4])&(u[1]<=u[3]), "error in GPAV operadic code"
+        assert  (v[0]<=v[1])&(v[1]<=v[2])&(v[2]<=v[4])&(v[1]<=v[3]), "error in GPAV segmented code"
