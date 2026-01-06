@@ -156,6 +156,7 @@ def gpav_seg(
     # Initialize
     blocks: Dict[int, Dict] = {}
     current_block_of = {i: i for i in range(n)}  # element -> current head
+    rev_pred: Dict[int, set] = {}  # inverse index: head -> set of heads that list it in 'children_k'
 
     # Sweep
     for k in topo: # change j to k
@@ -217,6 +218,28 @@ def gpav_seg(
             if j in B_k_minus:
                 B_k_minus.remove(j) # taking out {j}
 
+            # Inverse-index rewiring (efficient): for all i with j in B_i^-, replace j by k
+            affected = rev_pred.get(j)
+            if affected:
+                for i_head in list(affected):
+                    B_i = blocks.get(i_head)
+                    if B_i is None:
+                        continue
+                    if j in B_i.get('children_k', set()):
+                        B_i['children_k'].remove(j)
+                        B_i['children_k'].add(k)
+                        rev_pred.setdefault(k, set()).add(i_head)
+                rev_pred.pop(j, None)
+
+            # Remove j from inverse-index entries of its predecessor heads
+            for p_head in B_j.get('children_k', set()):
+                s = rev_pred.get(p_head)
+                if s:
+                    s.discard(j)
+                    if not s:
+                        rev_pred.pop(p_head, None)
+
+
             # Remove merged block B_j-
             del blocks[j]  # but other blocks can make reference to this deleted one
 
@@ -225,6 +248,9 @@ def gpav_seg(
 
         # Keep only existing heads (if part is for safety)
         blocks[k]['children_k'] = set(h for h in B_k_minus if h in blocks)
+        for p_head in blocks[k]['children_k']:
+            rev_pred.setdefault(p_head, set()).add(k)
+
 
     # Assemble outputs (LOCAL indexing 0..n-1)
     u = np.zeros(n, dtype=float)
@@ -404,6 +430,7 @@ def gpav_op(
     # Initialize
     blocks: Dict[int, Dict] = {}
     current_block_of = {i: i for i in range(n)}  # element -> current head
+    rev_pred: Dict[int, set] = {}  # inverse index: head -> set of heads that list it in 'children_k'
 
     for k in topo: # change j to k
         # Create singleton block for j
@@ -464,6 +491,28 @@ def gpav_op(
             if j in B_k_minus:
                 B_k_minus.remove(j) # taking out {j}
 
+            # Inverse-index rewiring (efficient): for all i with j in B_i^-, replace j by k
+            affected = rev_pred.get(j)
+            if affected:
+                for i_head in list(affected):
+                    B_i = blocks.get(i_head)
+                    if B_i is None:
+                        continue
+                    if j in B_i.get('children_k', set()):
+                        B_i['children_k'].remove(j)
+                        B_i['children_k'].add(k)
+                        rev_pred.setdefault(k, set()).add(i_head)
+                rev_pred.pop(j, None)
+
+            # Remove j from inverse-index entries of its predecessor heads
+            for p_head in B_j.get('children_k', set()):
+                s = rev_pred.get(p_head)
+                if s:
+                    s.discard(j)
+                    if not s:
+                        rev_pred.pop(p_head, None)
+
+
             # Remove merged block B_j-
             del blocks[j]  # but other blocks can make reference to this deleted one
 
@@ -472,6 +521,9 @@ def gpav_op(
 
         # Keep only existing heads
         blocks[k]['children_k'] = set(h for h in B_k_minus if h in blocks)
+        for p_head in blocks[k]['children_k']:
+            rev_pred.setdefault(p_head, set()).add(k)
+
         
     # Assemble outputs (LOCAL indexing 0..n-1)
     u = np.zeros(n, dtype=float)
