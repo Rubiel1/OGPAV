@@ -81,26 +81,56 @@ u_hat = OGPAV(
 print(u_hat[:30])
 
 ```
-
-To compare with Segmentation-Based GPAV
+If input is only locally indexed:
 ```
-from sb_gpav_paper import sb_gpav_fit
+import hasse
+from operadic_gpav import OGPAV
 
-X = data["X"]
-y = data["Y_array"]
+# --------------------------------------------------
+# Outer poset Q with 3 elements {0,1,2}
+# --------------------------------------------------
+Q = hasse.PoSet.from_chains([0, 1], [0, 2])
 
-fitted, blocks_hat, GB = sb_gpav_fit(
-    X,
-    y,
-    n_segments=10,
-    use_trend_following=True,
-    debug=False,
+R_subposets = [
+    hasse.PoSet.from_chains([0, 1]),        # R_0
+    hasse.PoSet.from_chains([0], [1]),      # R_1
+    hasse.PoSet.from_chains([0, 1, 2]),     # R_2
+]
+
+# --------------------------------------------------
+# Per-R_i observed data
+# Keys are LOCAL node labels of each R_i
+# --------------------------------------------------
+A_list = [
+    {0: 3.0, 1: 1.0},           # data on R_0
+    {0: 2.0, 1: 4.0},           # data on R_1
+    {0: 1.0, 1: 2.0, 2: 3.0},   # data on R_2
+]
+
+# --------------------------------------------------
+# Run OGPAV and return output aligned with R_i
+# --------------------------------------------------
+u_list = OGPAV(
+    Q=Q,
+    R_subposets=R_subposets,
+    A=None,                          # ignored when A_list is provided
+    A_list=A_list,
+    return_by_local_index=True,     # return per-fiber dictionaries
+    verbose=True,
 )
+
+for i, u_i in enumerate(u_list):
+    print(f"Fitted values on R_{i}: {u_i}")
 ```
+
+
+
+
 Notes on Correctness
 
 All algorithms assume acyclic partial orders (posets).
 
+Please, Index the nodes of $R_i$ with indexes from $0$ to $n-1$.
 
 
 Authors: Eric Dolores Cuenca, Susana Lopez Moreno, Jonathan Toledo Toledo, Anh Nguyen, Sangil Kim
