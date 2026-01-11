@@ -202,4 +202,4 @@ class TestClass:
         return_by_local_index=True,       # if you added this option
         verbose=True,
         )
-       assert (u_list[0][1] <= u_list[2][0])&(u_list[0][1] <= u_list[1][0])&(u_list[0][1] <= u_list[1][1]), "error in GPAV when list of Ys is given"
+        assert (u_list[0][1] <= u_list[2][0])&(u_list[0][1] <= u_list[1][0])&(u_list[0][1] <= u_list[1][1]), "error in GPAV when list of Ys is given"
