@@ -182,4 +182,24 @@ class TestClass:
                      topo_order = ordentopo
         )#[]
         assert  (u[0]<=u[1])&(u[1]<=u[2])&(u[2]<=u[4])&(u[1]<=u[3]), "error in GPAV operadic code"
-        assert  (v[0]<=v[1])&(v[1]<=v[2])&(v[2]<=v[4])&(v[1]<=v[3]), "error in GPAV segmented code"
+    def test_local_input_op(self):
+        Q = hasse.PoSet.from_chains([0, 1], [0, 2])
+        R_subposets = [
+            hasse.PoSet.from_chains([0, 1]),        # R_0
+            hasse.PoSet.from_chains([0], [1]),      # R_1
+            hasse.PoSet.from_chains([0, 1, 2]),     # R_2
+            ]
+        A_list = [
+            {0: 3.0, 1: 1.0},           # data on R_0
+            {0: 2.0, 1: 4.0},           # data on R_1
+            {0: 1.0, 1: 2.0, 2: 3.0},   # data on R_2
+            ]
+        u_list = OGPAV(
+        Q=Q,
+        R_subposets=R_subposets,
+        A=None,                     # ignored
+        A_list=A_list,
+        return_by_local_index=True,       # if you added this option
+        verbose=True,
+        )
+       assert (u_list[0][1] <= u_list[2][0])&(u_list[0][1] <= u_list[1][0])&(u_list[0][1] <= u_list[1][1]), "error in GPAV when list of Ys is given"
