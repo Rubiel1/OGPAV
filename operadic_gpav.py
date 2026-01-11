@@ -47,6 +47,9 @@ BlockId = int              # index of a block in a block-level DAG
 # Utilities
 # -------------------------
 
+
+
+
 def _offsets_from_subposets(R_subposets: List[hasse.PoSet]) -> List[int]:
     """Compute contiguous offsets so that the concatenation of R_i element-sets
     maps to [0..N-1].  This is only indexing bookkeeping; it does not touch
@@ -58,6 +61,45 @@ def _offsets_from_subposets(R_subposets: List[hasse.PoSet]) -> List[int]:
         offs.append(cur)
         cur += len(R)
     return offs
+
+def _assemble_global_arrays_from_A_list(
+    H_R_list: List[nx.DiGraph],
+    offs: List[int],
+    A_list: List[Dict[NodeLabel, float]],
+    weights_list: Optional[List[Dict[NodeLabel, float]]] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Build global A_array and W_array (length N) from per-fiber dicts keyed by local node labels.
+
+    Each local label is an int
+    and its global index is offset + int(lbl).
+    """
+    N = sum(len(H) for H in H_R_list)
+    A_array = np.empty(N, dtype=float)
+    W_array = np.ones(N, dtype=float)
+
+    if len(A_list) != len(H_R_list):
+        raise ValueError(f"A_list must have length {len(H_R_list)} (one per fiber).")
+
+    if weights_list is not None and len(weights_list) != len(H_R_list):
+        raise ValueError(f"weights_list must have length {len(H_R_list)} (one per fiber).")
+
+    for i, H_R in enumerate(H_R_list):
+        offset = offs[i]
+        nodes = list(H_R.nodes())
+        A_i = A_list[i]
+        W_i = weights_list[i] if weights_list is not None else None
+
+        for lbl in nodes:
+            g = offset + int(lbl)  # same convention used elsewhere in this file
+            if lbl not in A_i:
+                raise KeyError(f"Missing A_list[{i}][{lbl}] for fiber {i}.")
+            A_array[g] = float(A_i[lbl])
+            if W_i is not None:
+                W_array[g] = float(W_i.get(lbl, 1.0))
+
+    return A_array, W_array
+
 
 
 def as_reduced_hasse(poset_or_graph) -> nx.DiGraph:
@@ -110,10 +152,11 @@ def _local_blocks_for_R(
     H_R :
         Hasse diagram of the input poset R_i.
     A_seg, W_seg :
-        Either
-           1D array-like, interpreted as A_seg[j] / W_seg[j] for label j
-            (labels are assumed to be integers 0..m-1), or
-           dict {local_label -> value} keyed by the node labels of H_R.
+    Either 1D array-like objects indexed by integer local labels 0..m−1,
+    or dictionaries keyed by integer local node labels of H_R.
+
+    Non-integer labels are not supported.
+
     custom_topo :
         Optional user-provided topological order (list of node labels of H_R).
         If given, this is passed as `topo_order` to `gpav` and `use_trend_following`
@@ -334,15 +377,18 @@ def _local_blocks_for_R(
 def OGPAV(
     Q: hasse.PoSet,
     R_subposets: List[hasse.PoSet],
-    A: np.ndarray | Dict[int, float],
+    A: Optional[np.ndarray | Dict[int, float]]=None,
     weights: Optional[np.ndarray | Dict[int, float]] = None,
     *,
+    A_list: Optional[List[np.ndarray | Dict[NodeLabel, float]]] = None,
+    weights_list: Optional[List[np.ndarray| Dict[int, float]]] = None,
     use_trend_following_first: bool = True,
     use_trend_following_blocks: bool = True,
     max_workers: Optional[int] = None,
     inputs_are_reduced: bool = False,
     verbose: bool = False,
     debug: bool = False,
+    return_by_local_index: bool = False,
     segment_topo_orders: Optional[List[Optional[List[NodeLabel]]]] = None,
 ) -> np.ndarray:
     """
@@ -363,7 +409,7 @@ def OGPAV(
       (Step 7) Propagate the block-level fitted values back to elements.
 
 
-    Parameters (add this block)
+    Parameters:
 
     Q : hasse.PoSet The “outer” poset Q with m = len(R_subposets) elements, in the lexicographic sum 
     P=Q(R1,…,Rm)
@@ -376,21 +422,45 @@ def OGPAV(
 
     The total number of “inputs” in the lexicographic sum is N = sum(len(R_i)).
 
-    A : np.ndarray | Dict[int, float]
-    The observed values on the vertices of the lexicographic sum.
+    
+    A : Optional[np.ndarray | Dict[int, float]]
+    Global observed data on the lexicographic sum.
 
-    If a dict, it is interpreted as {global_index -> value} for global_index in 0..N-1, 
-    and is converted into A_array in that order.
+    If provided as a dict:
+        Interpreted as {global_index -> value}, where global_index ranges
+        from 0 to N−1 according to the internal concatenation order induced
+        by R_subposets.
 
-    If an array/sequence, it is interpreted as already aligned with the internal 
-    concatenation order 0..N-1 (This option is discouraged since it is possible that 
-    the internal order is the order of input of the vertices, not the label).
+    If provided as an array-like:
+        Interpreted as already aligned with the internal global order
+        0..N−1. This option is discouraged unless the user is certain of
+        the internal ordering.
+
+    If A_list is provided, A is ignored.
+
+
+    A_list : Optional[List[Dict[NodeLabel, float]]]
+    Optional alternative to A.
+
+    Each A_list[i] must be a dictionary keyed by the local node labels of R_i.
+    These labels are expected to be integers in {0, …, |R_i|−1}.
+
+    The algorithm uses these integer labels to compute global indices via
+    fixed offsets. Non-integer labels are not supported.
+
 
     weights : Optional[np.ndarray | Dict[int, float]]
+    Optional global weights, using the same conventions as A.
 
-    Optional weights per node (same indexing convention as A).
     If None, all weights default to 1.0.
-    If a dict, missing keys default to weight 1.0 (via weights.get(i, 1.0)).
+    If a dict, missing keys default to weight 1.0.
+
+    Ignored if weights_list is provided.
+
+    weights_list : Optional[List[Dict[NodeLabel, float]]]
+    Optional per-fiber weights, analogous to A_list.
+
+    Keys must be the same integer node labels used in R_i.
 
     use_trend_following_first : bool
     Controls the local ordering used for GPAV inside each input R_i when an order
@@ -425,6 +495,8 @@ def OGPAV(
         a list of node labels of H_R_list[i]: explicit topological order used for fiber R_i, 
         overriding use_trend_following_first for that fiber.
 
+    If return_by_local_index =True, returns List[Dict[NodeLabel, float]] aligned with A_list.
+
     Returns
 
     u_final : np.ndarray
@@ -434,7 +506,21 @@ def OGPAV(
 
     This is obtained by solving GPAV on each fiber, then GPAV on the induced global block DAG, 
     and finally propagating block-level fits back to atoms.  
-    
+
+
+    Important note on node labels
+    -----------------------------
+    This implementation assumes that all node labels in each input poset R_i
+    (and hence in Q) are integers starting from 0, i.e. labels in {0, …, |R_i|−1}
+    for each fiber R_i.
+
+    These integer labels are used as local indices and are mapped to global
+    indices via contiguous offsets. Internally, global indices are computed as
+
+        global_index = offset_i + int(local_label)
+
+    Using non-integer or non-contiguous labels will lead to incorrect indexing
+    or runtime errors.
 
     """
     verbose = verbose or debug
@@ -442,7 +528,8 @@ def OGPAV(
         print("== Operadic / Factorized SB-GPAV: start ==")
         print(f"Flags: use_trend_following_first={use_trend_following_first}, use_trend_following_blocks={use_trend_following_blocks}, "
               f"inputs_are_reduced={inputs_are_reduced}")
-        print(f"Q nodes={len(Q)}, #R={len(R_subposets)}, |A|={len(A)}")
+        a_len = (len(A) if A is not None else sum(len(d) for d in A_list) if A_list is not None else 0)
+        print(f"Q nodes={len(Q)}, #R={len(R_subposets)}, |A|={a_len}")
         if weights is not None:
             print("Weights provided.")
 
@@ -457,6 +544,18 @@ def OGPAV(
         if verbose:
             print("Assuming Q is already reduced (Hasse).")
 
+    q_nodes = list(H_Q.nodes())
+    if any(not isinstance(v, (int, np.integer)) for v in q_nodes):
+        bad = [v for v in q_nodes if not isinstance(v, (int, np.integer))][:5]
+        raise TypeError(
+            f"Q has non-integer node labels (example: {bad}). "
+            "This implementation expects Q labels to be integers 0..m-1."
+        )
+    if set(q_nodes) != set(range(len(q_nodes))):
+        raise ValueError(
+            f"Q labels must be exactly {{0..{len(q_nodes)-1}}}."
+        )
+
     # Normalize each R_i once to its Hasse (covers only). (Used in Steps 1–4.)
     H_R_list: List[nx.DiGraph] = []
     for idx, R in enumerate(R_subposets):
@@ -467,6 +566,22 @@ def OGPAV(
             if verbose:
                 print(f"Reduced R[{idx}] to Hasse once.")
         H_R_list.append(H)
+        # Early-fail: this implementation assumes integer local labels
+        nodes = list(H.nodes())
+        if any(not isinstance(v, (int, np.integer)) for v in nodes):
+            bad = [v for v in nodes if not isinstance(v, (int, np.integer))][:5]
+            raise TypeError(
+                f"R[{idx}] has non-integer node labels (example: {bad}). "
+                "This implementation expects labels to be integers."
+            )
+        m = len(nodes)
+        # labels should be exactly {0..m-1}
+        if set(nodes) != set(range(m)):
+            raise ValueError(
+                f"R[{idx}] labels must be exactly {{0..{m-1}}}, got {sorted(set(nodes))[:10]}..."
+            )
+
+
 
     if segment_topo_orders is not None:
         if len(segment_topo_orders) != len(R_subposets):
@@ -490,40 +605,56 @@ def OGPAV(
     # controlled solely by `offs` (these offsets are contiguous sums
     # of |R_i|).
     # ------------------------------------------------------------------
-    if isinstance(A, dict):
-        A_array = np.array([float(A[i]) for i in range(N)], dtype=float)
-    else:
-        warnings.warn(
-        "A was provided as a sequence/array. GPAV assumes A[i] corresponds to internal index "
-        "i=0..N-1 (the internal concatenation order). If your A is keyed by node labels or a "
-        "different ordering, pass a dict-like mapping to avoid misalignment.",
-        category=UserWarning,
-        stacklevel=2,
-        )
-        A_array = np.asarray(A, dtype=float)
-    if A_array.ndim != 1:
-        raise ValueError(f"A must be 1D; got shape {A_array.shape!r}")
-    if A_array.shape[0] != N:
-        raise ValueError(f"A has length {A_array.shape[0]} but sum|R_i| = {N}")
-
     # ------------------------------------------------------------------
-    # Normalize weights into a 1D float64 array W_array of length N.
-    # If weights is None or missing in a dict, default weight is 1.0.
+    # Global data model (user can provide either A (global) OR A_list (per fiber)).
     # ------------------------------------------------------------------
-    if weights is None:
-        W_array = np.ones(N, dtype=float)
-    else:
-        if isinstance(weights, dict):
-            W_array = np.array(
-                [float(weights.get(i, 1.0)) for i in range(N)],
-                dtype=float,
+    if A_list is not None:
+        if A is not None:
+            warnings.warn(
+                "Both A and A_list were provided. Ignoring A and using A_list.",
+                category=UserWarning,
+                stacklevel=2,
             )
+        A_array, W_array = _assemble_global_arrays_from_A_list(
+            H_R_list=H_R_list,
+            offs=offs,
+            A_list=A_list,
+            weights_list=weights_list,
+        )
+    else:
+        if A is None:
+            raise ValueError("You must provide either A (global) or A_list (per poset R_i).")
+
+        if isinstance(A, dict):
+            A_array = np.array([float(A[i]) for i in range(N)], dtype=float)
         else:
-            W_array = np.asarray(weights, dtype=float)
-        if W_array.ndim != 1:
-            raise ValueError(f"weights must be 1D; got shape {W_array.shape!r}")
-        if W_array.shape[0] != N:
-            raise ValueError(f"weights has length {W_array.shape[0]} but sum|R_i| = {N}")
+            warnings.warn(
+                "A was provided as a sequence/array. GPAV assumes A[i] corresponds to internal index "
+                "i=0..N-1 (the internal concatenation order). If your A is keyed by node labels or a "
+                "different ordering, pass a dict-like mapping to avoid misalignment.",
+                category=UserWarning,
+                stacklevel=2,
+            )
+            A_array = np.asarray(A, dtype=float)
+
+        if A_array.ndim != 1:
+            raise ValueError(f"A must be 1D; got shape {A_array.shape!r}")
+        if A_array.shape[0] != N:
+            raise ValueError(f"A has length {A_array.shape[0]} but sum|R_i| = {N}")
+
+        # Normalize weights
+        if weights is None:
+            W_array = np.ones(N, dtype=float)
+        else:
+            if isinstance(weights, dict):
+                W_array = np.array([float(weights.get(i, 1.0)) for i in range(N)], dtype=float)
+            else:
+                W_array = np.asarray(weights, dtype=float)
+            if W_array.ndim != 1:
+                raise ValueError(f"weights must be 1D; got shape {W_array.shape!r}")
+            if W_array.shape[0] != N:
+                raise ValueError(f"weights has length {W_array.shape[0]} but sum|R_i| = {N}")
+    
 
     # Quick sanity checks on Q vs. number of components.
     if H_Q.number_of_nodes()!= len(H_R_list):
@@ -749,6 +880,15 @@ def OGPAV(
         preview = [(i, float(u_final[i])) for i in range(min(len(u_final), 20))]
         print(f"  {preview}")
         print("== Operadic / Factorized SB-GPAV: finished ==")
+
+    if return_by_local_index:
+        u_list = []
+        for i, H_R in enumerate(H_R_list):
+            offset = offs[i]
+            u_i = {lbl: float(u_final[offset + int(lbl)]) for lbl in H_R.nodes()}
+            u_list.append(u_i)
+        return u_list
+
 
     return u_final
 
