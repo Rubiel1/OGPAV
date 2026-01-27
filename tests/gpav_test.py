@@ -4,6 +4,7 @@ from gpav import gpav_op, gpav_seg
 import networkx as nx
 import numpy as np
 import hasse
+from sb_gpav_paper import sb_gpav
 
 class TestClass:
     def test_line_op(self):
@@ -200,6 +201,58 @@ class TestClass:
         A=None,                     # ignored
         A_list=A_list,
         return_by_local_index=True,       # if you added this option
-        verbose=True,
+        verbose=False,
         )
         assert (u_list[0][1] <= u_list[2][0])&(u_list[0][1] <= u_list[1][0])&(u_list[0][1] <= u_list[1][1]), "error in GPAV when list of Ys is given"
+    def test_sb_chain_identity(self):
+        G = nx.DiGraph()
+        G.add_edges_from([('a', 'b'), ('b', 'c'), ('c', 'd')])
+        Y_map = {'a': 1.0, 'b': 2.0, 'c': 3.0, 'd': 4.0}
+        u = sb_gpav(
+            G, Y_map,
+            n_segments=2,
+            use_trend_following_first=True,
+            use_trend_following_blocks=True,
+            verbose=False,
+            return_by_label=False,
+        )
+        assert set(u) == {1.0, 2.0, 3.0, 4.0}, "SB-GPAV changed an already isotone chain"
+    def test_sb_order_invariance(self):
+
+        # Same abstract poset, but build using different chain input orders
+        poset1 = hasse.PoSet.from_chains([0,1,2], [0,3,2])
+        poset2 = hasse.PoSet.from_chains([0,3,2], [0,1,2])  # swapped chain order
+
+        Y = [10, 13, 11, 9]
+        Y_map = {i: float(y) for i, y in enumerate(Y)}
+
+        # Compare by label using return_by_label=True to avoid internal node-order issues
+        m1 = sb_gpav(poset1, Y_map, n_segments=2)
+        m2 = sb_gpav(poset2, Y_map, n_segments=2)
+
+        assert m1 == m2, "SB-GPAV depends on construction order (label mismatch)"
+    def test_sb_isotone_output(self):
+
+        poset = hasse.PoSet.from_chains([0,1,2], [0,3,2])  # 0<1<2 and 0<3<2
+        Y = [10, 13, 11, 9]
+        Y_map = {i: float(y) for i, y in enumerate(Y)}
+
+        u_map = sb_gpav(
+            poset, Y_map,
+            n_segments=2,
+            verbose=False,
+        )
+
+        # Check isotonicity on all Hasse edges (covers):
+        H = poset.hasse  # assuming hasse.PoSet exposes .hasse as a DiGraph
+        
+        for a, b in H.edges():
+            assert u_map[a] <= u_map[b], f"SB-GPAV violated isotonicity on edge {a}<{b}"
+    def test_sb_red(self):
+
+        G = hasse.PoSet.from_chains([0,1,2], [0,3,2])  # 0<1<2 and 0<3<2
+        Y = [10, 13, 11, 9]
+        Y_map = {i: float(y) for i, y in enumerate(Y)}
+        u1 = sb_gpav(G, Y_map, inputs_are_reduced=True)
+        u2 = sb_gpav(G, Y_map, inputs_are_reduced=False)
+        assert u1 == u2, "the reduction flag has a problem"
