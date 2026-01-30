@@ -15,7 +15,7 @@ Segmentation-Based GPAV (SB-GPAV) following:
 - Assembly stage (Algorithm 4, Assembly stage; Algorithms 2–3):
     - Treat the segment blocks as "supernodes" (blocks).
     - Build a block precedence DAG via the Min–Max test for finite posets:
-        Block A ≺ Block B  iff  (∀ a ∈ MAX(A)) (∀ b ∈ MIN(B))   a ≺ b
+        Block B ≺ Block A  iff  exist ( a ∈ MAX(A)) ( b ∈ MIN(B))   b ≺ a
       where MIN(B) and MAX(A) are sets of minimal/maximal elements in the block (in the poset sense).
     - Remove redundant edges (we use transitive reduction).
     - Run GPAV on this block DAG using block averages and block weights.
@@ -235,26 +235,27 @@ def _block_extrema_nodes(
 
 def _block_precedes_poset(
     H_full: nx.DiGraph,
-    maxA: Sequence,
     minB: Sequence,
+    maxA: Sequence,
     *,
     reach_cache: Dict,
 ) -> bool:
     """
-    SB Min–Max precedence for finite posets (set-based):
-      A ≺ B  iff  ∀ a ∈ MAX(A), ∀ b ∈ MIN(B):  a ≺ b  (reachability)
+    SB Min–Max precedence for finite posets:
+      Add edge B→A iff there exist i_min ∈ MIN(B), j_max ∈ MAX(A)
++      such that i_min ≺ j_max 
 
     """
     if not maxA or not minB:
         return False
-
+    maxA = list(maxA)
     minB = list(minB)
-    for a in maxA:
-        da = _descendants_cached(H_full, a, reach_cache)
-        for b in minB:
-            if b not in da:
-                return False
-    return True
+    for b in minB:
+        db = _descendants_cached(H_full, b, reach_cache)
+        for a in maxA:
+            if a in db:
+                return True
+    return False
 
 
 # ---------------------------------------------------------------------
@@ -431,10 +432,10 @@ def _build_block_dag_minmax(
         bi = blocks[i]
         for j in range(i + 1, B):
             bj = blocks[j]
-            if _block_precedes_poset(H_full, bi.maxs, bj.mins, reach_cache=reach_cache):
-                G_B.add_edge(i, j)
-            elif _block_precedes_poset(H_full, bj.maxs, bi.mins, reach_cache=reach_cache):
+            if _block_precedes_poset(H_full,bj.mins, bi.maxs,  reach_cache=reach_cache):
                 G_B.add_edge(j, i)
+            elif _block_precedes_poset(H_full,bi.mins, bj.maxs,  reach_cache=reach_cache):
+                G_B.add_edge(i, j)
 
     if G_B.number_of_edges() > 0:
         if not nx.is_directed_acyclic_graph(G_B):
