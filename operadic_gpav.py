@@ -371,6 +371,205 @@ def _local_blocks_for_R(
 
 
 # -------------------------
+# Lexicographic sum construction
+# -------------------------
+
+def validate_disjoint_posets(G_loc_list: List[nx.DiGraph], verbose: bool = False) -> int:
+    """
+    Verify that all local posets have disjoint node label sets.
+    
+    This is critical for the lexicographic sum construction because overlapping
+    node indices across different R_i would break the global indexing scheme.
+    
+    Parameters
+    ----------
+    G_loc_list : List[nx.DiGraph]
+        List of local block-level Hasse DAGs, one per R_i.
+        
+    verbose : bool, optional
+        If True, print validation success message.
+        
+    Returns
+    -------
+    total_nodes : int
+        Total number of unique nodes across all posets.
+        
+    Raises
+    ------
+    ValueError
+        If any two posets have overlapping node labels.
+        
+    Notes
+    -----
+    Time complexity: O(N) where N = total number of nodes across all posets.
+    This is very cheap and should always be run to catch indexing bugs early.
+    """
+    seen = set()
+    total_nodes = 0
+    
+    for i, G_loc in enumerate(G_loc_list):
+        if G_loc is None or G_loc.number_of_nodes() == 0:
+            continue
+            
+        nodes = set(G_loc.nodes())
+        overlap = seen & nodes
+        
+        if overlap:
+            # Show up to 10 overlapping labels for debugging
+            overlap_sample = list(overlap)[:10]
+            overlap_str = str(overlap_sample)
+            if len(overlap) > 10:
+                overlap_str = f"{overlap_sample}... ({len(overlap)} total)"
+            raise ValueError(
+                f"R[{i}] has overlapping node labels with previous posets: {overlap_str}. "
+                f"All R_i must have disjoint node label sets for the lexicographic sum construction."
+            )
+        
+        seen.update(nodes)
+        total_nodes += len(nodes)
+    
+    if verbose:
+        print(f"✓ Validated: all {len(G_loc_list)} posets have disjoint node labels ({total_nodes} total nodes)")
+    
+    return total_nodes
+
+
+def construct_lexicographic_sum_dag(
+    H_Q: nx.DiGraph,
+    G_loc_list: List[nx.DiGraph],
+    group_min_global: Optional[List[List[int]]] = None,
+    group_max_global: Optional[List[List[int]]] = None,
+    total_blocks: Optional[int] = None,
+    verbose: bool = False,
+) -> nx.DiGraph:
+    """
+    Construct the global block DAG G_B for the lexicographic sum Q(R_1, ..., R_m).
+    
+    This implements Step 5 of the operadic GPAV algorithm:
+    (i) Add all intra-group block Hasse edges from each R_i.
+    (ii) For each cover edge i->j in Hasse(Q), add edges from every maximal 
+         block of R_i to every minimal block of R_j.
+    
+    The resulting graph is a Hasse diagram (transitive reduction) by construction.
+    
+    Parameters
+    ----------
+    H_Q : nx.DiGraph
+        The Hasse diagram (cover relations) of the outer poset Q.
+        Nodes are integers 0..m-1 where m = len(G_loc_list).
+        
+    G_loc_list : List[nx.DiGraph]
+        List of local block-level Hasse DAGs, one per R_i.
+        G_loc_list[i] contains the block-level cover relations within R_i,
+        with nodes already mapped to global block indices.
+        
+    group_min_global : Optional[List[List[int]]]
+        For each i, group_min_global[i] is the list of global block indices
+        corresponding to minimal blocks in R_i.
+        If None, will be computed automatically from G_loc_list by finding
+        nodes with in-degree 0.
+        
+    group_max_global : Optional[List[List[int]]]
+        For each i, group_max_global[i] is the list of global block indices
+        corresponding to maximal blocks in R_i.
+        If None, will be computed automatically from G_loc_list by finding
+        nodes with out-degree 0.
+        
+    total_blocks : Optional[int]
+        Total number of blocks across all R_i (used to initialize G_B nodes).
+        If None, will be computed as the union of all nodes in G_loc_list.
+        
+    verbose : bool, optional
+        If True, print diagnostic information about edge additions.
+        
+    Returns
+    -------
+    G_B : nx.DiGraph
+        The global block DAG representing the lexicographic sum.
+        Nodes are block indices 0..B-1 where B = total_blocks.
+        Edges represent the Hasse (cover) relations in the lexicographic sum.
+        
+    Notes
+    -----
+    This function constructs G_B as a Hasse diagram by design:
+    - Intra-group edges come from already-reduced local Hasse diagrams.
+    - Inter-group edges connect only extremal blocks (max of R_i to min of R_j),
+      which by construction cannot create transitive paths through intermediate blocks.
+      
+    The caller may optionally verify this property in debug mode by checking
+    that nx.transitive_reduction(G_B) == G_B.
+    
+    Examples
+    --------
+    # If you already have extrema computed (e.g., from OGPAV):
+    G_B = construct_lexicographic_sum_dag(H_Q, G_loc_list, mins, maxs, B)
+    
+    # If you just have the posets and want extrema computed automatically:
+    G_B = construct_lexicographic_sum_dag(H_Q, G_loc_list)
+    """
+    # Always validate disjoint node labels (cheap and critical for correctness)
+    total_blocks_temp = validate_disjoint_posets(G_loc_list, verbose=verbose)
+    
+    # Use the validated count if total_blocks was not provided
+    if total_blocks is None:
+        total_blocks = total_blocks_temp
+    
+    # Compute extrema if not provided
+    if group_min_global is None or group_max_global is None:
+        if verbose:
+            print("  Computing extremal blocks from G_loc_list...")
+        
+        computed_mins = []
+        computed_maxs = []
+        
+        for i, G_loc in enumerate(G_loc_list):
+            if G_loc is None or G_loc.number_of_nodes() == 0:
+                computed_mins.append([])
+                computed_maxs.append([])
+            else:
+                # Minimal blocks: nodes with in-degree 0
+                mins = [n for n in G_loc.nodes() if G_loc.in_degree(n) == 0]
+                # Maximal blocks: nodes with out-degree 0
+                maxs = [n for n in G_loc.nodes() if G_loc.out_degree(n) == 0]
+                computed_mins.append(mins)
+                computed_maxs.append(maxs)
+                
+                if verbose:
+                    print(f"    R{i}: {len(mins)} min block(s), {len(maxs)} max block(s)")
+        
+        if group_min_global is None:
+            group_min_global = computed_mins
+        if group_max_global is None:
+            group_max_global = computed_maxs
+    
+    # Initialize the global block DAG with all block nodes
+    G_B = nx.DiGraph()
+    G_B.add_nodes_from(range(total_blocks))
+    
+    # (Step 5.i) Add intra-group block Hasse edges
+    # Each G_loc_list[i] already contains edges in global block coordinates
+    for gi, G_loc_g in enumerate(G_loc_list):
+        if G_loc_g is not None and G_loc_g.number_of_edges() > 0:
+            G_B.add_edges_from(G_loc_g.edges)
+            if verbose:
+                print(f"  Added intra-group edges from R{gi} (at most 20): {list(G_loc_g.edges)[:20]}")
+    
+    # (Step 5.ii) Add inter-group edges
+    # For each cover edge i->j in Hasse(Q), connect every maximal block of R_i
+    # to every minimal block of R_j
+    for i, j in H_Q.edges:
+        max_i = group_max_global[i] or []
+        min_j = group_min_global[j] or []
+        for a in max_i:
+            for b in min_j:
+                G_B.add_edge(a, b)
+                if verbose:
+                    print(f"  Added cross edge (Q {i}->{j}): B{a} -> B{b}")
+    
+    return G_B
+
+
+# -------------------------
 # Main: factorized SB-GPAV for lexicographic sum
 # -------------------------
 
@@ -820,25 +1019,16 @@ def OGPAV(
     # --- Stage 2: build G_B (Hasse by construction). Implements Step 5.
     if verbose:
         print("Stage 2 — Assemble block DAG G_B (Hasse by construction).")
-    G_B = nx.DiGraph(); G_B.add_nodes_from(range(B))
-
-    # (Step 5.i) Add intra-group block Hasse edges.
-    for gi, G_loc_g in enumerate(G_loc_list):
-        if G_loc_g is not None:
-            G_B.add_edges_from(G_loc_g.edges)
-            if verbose and G_loc_g.number_of_edges() > 0:
-                print(f"  Added intra-group edges from R{gi} (at most 20): {list(G_loc_g.edges)[:20]}")
-
-    # (Step 5.ii) Add inter-group edges: for each Hasse(Q) cover i->j, add
-    # edges from every max block of R_i to every min block of R_j.
-    for i, j in H_Q.edges:
-        max_i = group_max_global[i] or []
-        min_j = group_min_global[j] or []
-        for a in max_i:
-            for b in min_j:
-                G_B.add_edge(a, b)
-                if verbose:
-                    print(f"  Added cross edge (Q {i}->{j}): B{a} -> B{b}")
+    
+    # Use the extracted function to construct the lexicographic sum DAG
+    G_B = construct_lexicographic_sum_dag(
+        H_Q=H_Q,
+        G_loc_list=G_loc_list,
+        group_min_global=group_min_global,
+        group_max_global=group_max_global,
+        total_blocks=B,
+        verbose=verbose,
+    )
 
     # Debug-only runtime verification that G_B is already transitive-reduced.
     if debug and G_B.number_of_edges() > 0:
