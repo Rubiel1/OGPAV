@@ -1055,7 +1055,7 @@ def OGPAV(
         print("Run GPAV on block DAG...")
     block_vals_map = {b: float(block_values[b]) for b in G_B.nodes()}
     block_wts_map  = {b: float(block_weights[b]) for b in G_B.nodes()}
-    u_blocks, _, _ = gpav(block_vals_map, G_B, topo_order=TB, weights=block_wts_map)
+    u_blocks, _, _, _ = gpav(block_vals_map, G_B, topo_order=TB, weights=block_wts_map)
 
     # (Step 7) Propagate block-level fits back to elements.
     u_final = np.empty_like(A_array)
@@ -1116,5 +1116,5 @@ if __name__ == "__main__":
     Y_map2 = {i: float(y) for i, y in enumerate(Y)}
     order = trend_following_order(posetx, Y_map2)
     print(f"Trend_following order: {order}")
-    u_gpav, _, _ = gpav(Y_map2, posetx, order, verbose=True, name="GPAV(direct)")
+    u_gpav, _, _, _ = gpav(Y_map2, posetx, order, verbose=True, name="GPAV(direct)")
     print("Adjusted values (gpav):", u_gpav)

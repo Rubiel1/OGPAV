@@ -16,7 +16,7 @@ class TestClass:
         Y_aligned = np.array([Y_map[v] for v in nodes], dtype=float)
         # A topological order T
         T = trend_following_order(G, Y_aligned)
-        u, _, _ = gpav_op(Y_aligned, G, topo_order=T, verbose=True)
+        u, _, _, _ = gpav_op(Y_aligned, G, topo_order=T, verbose=True)
         v, _, _ = gpav_seg(Y_aligned, G, topo_order=T, verbose=True)
         assert set(u) == set([1.0,2.0,3.0,4.0]), "error of GPAV_op when the input is the trivial line already ordered "
         assert set(v) == set([1.0,2.0,3.0,4.0]), "error of GPAV_seg when the input is the trivial line already ordered "
@@ -174,7 +174,7 @@ class TestClass:
         Y = [0,10,11,0,-2]
         Y_map = {i: float(y) for i, y in enumerate(Y)}
         ordentopo= [0,1,2,3,4]
-        u,_,_ = gpav_op(Y=Y_map,
+        u,_,_,_ = gpav_op(Y=Y_map,
                     poset=posetcito,
                     topo_order= ordentopo,
                     )#[]

@@ -21,6 +21,8 @@ Segmentation-Based GPAV (SB-GPAV) following:
     - Run GPAV on this block DAG using block averages and block weights.
     - Propagate fitted block values back to original nodes.
 
+Warning, The paper didn't write a parallel implementation. This code 
+cannot be implemented in parallel since reach_cache is not thread-safe.
 
 """
 

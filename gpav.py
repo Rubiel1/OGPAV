@@ -610,6 +610,4 @@ def gpav_op(
         print(indent + f"u (aligned to nodes): {[(N[i], float(u[i])) for i in range(n)]}")
         print(indent + "----")
 
-    if return_block_edges:
-        return u, block_list, elem_to_block, block_edges
-    return u, block_list, elem_to_block
+    return u, block_list, elem_to_block, block_edges
