@@ -256,3 +256,34 @@ class TestClass:
         u1 = sb_gpav(G, Y_map, inputs_are_reduced=True)
         u2 = sb_gpav(G, Y_map, inputs_are_reduced=False)
         assert u1 == u2, "the reduction flag has a problem"
+    def test_R_op(self):
+        H_Q = nx.DiGraph()
+        H_Q.add_edge(0, 1)
+
+        # Local block DAG for R1: two blocks 0 < 1
+        G1 = nx.DiGraph()
+        G1.add_edge(0, 1)
+
+        # Local block DAG for R2: three blocks 0 < 1 < 2
+        G2 = nx.DiGraph()
+        G2.add_edge(0, 1)
+        G2.add_edge(1, 2)
+
+        G_loc_list = [G1, G2]
+
+        # Min/max blocks (local labels, overlapping on purpose)
+        group_min = [[0], [0]]
+        group_max = [[1], [2]]
+
+        # Call with auto-relabeling enabled
+        G_B, maps = construct_lexicographic_sum_dag(
+          H_Q,
+          G_loc_list,
+          group_min_global=group_min,
+          group_max_global=group_max,
+          relabel_if_needed=True,
+          return_relabel_maps=True,
+          verbose=False,
+        )
+
+        assert set(maps[0].values())& set(maps[1].values()) ==set(), "R_i's still have same labels"
