@@ -1,5 +1,5 @@
 from trend_following import trend_following_order
-from operadic_gpav import OGPAV
+from operadic_gpav import OGPAV, construct_lexicographic_sum_dag
 from gpav import gpav_op, gpav_seg
 import networkx as nx
 import numpy as np
