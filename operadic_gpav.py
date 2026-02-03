@@ -103,15 +103,26 @@ def _assemble_global_arrays_from_A_list(
 
 
 def as_reduced_hasse(poset_or_graph) -> nx.DiGraph:
-    """Return the Hasse diagram (transitive reduction) of a DAG.
-    Accepts either a PoSet-like object with `.hasse` (property or method)
-    or a raw nx.DiGraph. Call this once per input.
     """
-    H = getattr(poset_or_graph, "hasse", poset_or_graph)
-    G = H() if callable(H) else H
-    if not nx.is_directed_acyclic_graph(G):
+    Return a NetworkX DiGraph representing a Hasse diagram.
+
+    Policy:
+      - If input is hasse.PoSet (has `.hasse`), return it directly
+        (already transitive-reduced by the hasse library).
+      - Otherwise, assume input is a raw nx.DiGraph and transitive-reduce it.
+    """
+    if hasattr(poset_or_graph, "hasse"):
+        # hasse.PoSet: already a reduced nx.DiGraph
+        return poset_or_graph.hasse
+
+    if not isinstance(poset_or_graph, nx.DiGraph):
+        raise TypeError("Expected hasse.PoSet or networkx.DiGraph.")
+
+    try:
+        return nx.transitive_reduction(poset_or_graph)
+    except nx.NetworkXError:
         raise ValueError("Expected a DAG to build a Hasse diagram.")
-    return nx.transitive_reduction(G)
+
 
 
 
@@ -506,6 +517,7 @@ def construct_lexicographic_sum_dag(
     *,
     relabel_if_needed=False,
     return_relabel_maps=False,
+    from_ogpav=False,   
 ):
     """
     Construct the global block DAG G_B for the lexicographic sum Q(R_1, ..., R_m).
@@ -515,7 +527,9 @@ def construct_lexicographic_sum_dag(
     """
 
     relabel_maps = []
-
+    if not from_ogpav:
+        H_Q = as_reduced_hasse(H_Q)
+        G_loc_list = [as_reduced_hasse(G) for G in G_loc_list]
     # Validate disjointness or relabel if requested
     try:
         total_blocks_temp = validate_disjoint_posets(G_loc_list, verbose=verbose)
@@ -1056,6 +1070,7 @@ def OGPAV(
         group_max_global=group_max_global,
         total_blocks=B,
         verbose=verbose,
+        from_ogpav=True, 
     )
 
     # Debug-only runtime verification that G_B is already transitive-reduced.
