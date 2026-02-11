@@ -21,11 +21,9 @@ What it generates
    - P_hasse: Hasse diagram on the full set X = ⨆_i R_i (optional but useful for segmented_gpav)
 
 4) Observations y = f(x) + noise for several choices of f:
-   - linear:      f(x)=a1*x1 + a2*x2
-   - quadratic:   f(x)=a1*x1^2 + a2*x2^2
-   - sinusoid:    f(x)=a1*sin(w1*x1) + a2*cos(w2*x2)
-   - radial:      f(x)=a1*sqrt((x1-c1)^2+(x2-c2)^2)
-   - saddle:      f(x)=a1*x1 - a2*x2
+   - nonlinear:      g(x1)+g(x2) where g(t)=t^(1/3) if t<=0, t^3 if t>0
+   - linear_weak:    0.1*x1 + 0.1*x2
+   - linear_strong:  x1 + x2
 
 The output is a plain Python dict so you can use it in tests, save it, or convert to
 your hasse.PoSet objects if/when available.
@@ -182,36 +180,34 @@ def hasse_from_points(points: np.ndarray) -> nx.DiGraph:
 # Observation models
 # ---------------------------------------------------------------------
 
-def f_linear(x: np.ndarray, a1: float = 1.0, a2: float = 1.0) -> np.ndarray:
-    return a1 * x[:, 0] + a2 * x[:, 1]
+def _piecewise_scalar(t: np.ndarray) -> np.ndarray:
+    """f(t) = t^(1/3) if t <= 0, t^3 if t > 0  (element-wise)."""
+    out = np.empty_like(t, dtype=float)
+    pos = t > 0
+    out[pos] = t[pos] ** 3
+    out[~pos] = np.sign(t[~pos]) * np.abs(t[~pos]) ** (1.0 / 3.0)
+    return out
 
 
-def f_quadratic(x: np.ndarray, a1: float = 1.0, a2: float = 1.0) -> np.ndarray:
-    return a1 * (x[:, 0] ** 2) + a2 * (x[:, 1] ** 2)
+def f_nonlinear(x: np.ndarray) -> np.ndarray:
+    """f(x1,x2) = g(x1) + g(x2) with g piecewise cube-root / cube."""
+    return _piecewise_scalar(x[:, 0]) + _piecewise_scalar(x[:, 1])
 
 
-def f_sinusoid(
-    x: np.ndarray, a1: float = 1.0, a2: float = 1.0, w1: float = 0.25, w2: float = 0.25
-) -> np.ndarray:
-    return a1 * np.sin(w1 * x[:, 0]) + a2 * np.cos(w2 * x[:, 1])
+def f_linear_weak(x: np.ndarray) -> np.ndarray:
+    """f(x1,x2) = 0.1*x1 + 0.1*x2."""
+    return 0.1 * x[:, 0] + 0.1 * x[:, 1]
 
 
-def f_radial(
-    x: np.ndarray, a1: float = 1.0, c1: float = 50.0, c2: float = 50.0
-) -> np.ndarray:
-    return a1 * np.sqrt((x[:, 0] - c1) ** 2 + (x[:, 1] - c2) ** 2)
-
-
-def f_saddle(x: np.ndarray, a1: float = 1.0, a2: float = 1.0) -> np.ndarray:
-    return a1 * x[:, 0] - a2 * x[:, 1]
+def f_linear_strong(x: np.ndarray) -> np.ndarray:
+    """f(x1,x2) = x1 + x2."""
+    return x[:, 0] + x[:, 1]
 
 
 MODEL_FUNCS: Dict[str, Callable[..., np.ndarray]] = {
-    "linear": f_linear,
-    "quadratic": f_quadratic,
-    "sinusoid": f_sinusoid,
-    "radial": f_radial,
-    "saddle": f_saddle,
+    "nonlinear": f_nonlinear,
+    "linear_weak": f_linear_weak,
+    "linear_strong": f_linear_strong,
 }
 
 
@@ -460,7 +456,7 @@ def plot_3d(
 def make_and_plot_models(
     data: Dict[str, object],
     *,
-    models: Sequence[str] = ("linear", "quadratic", "sinusoid", "radial", "saddle"),
+    models: Sequence[str] = ("nonlinear", "linear_weak", "linear_strong"),
     noise: str = "normal",
     noise_scale: float = 1.0,
     seed: Optional[int] = None,
@@ -478,7 +474,7 @@ def attach_observations(
     *,
     y: Optional[np.ndarray] = None,
     Y_dict: Optional[Dict[int, float]] = None,
-    model: str = "linear",
+    model: str = "nonlinear",
     noise: str = "normal",
     noise_scale: float = 1.0,
     seed: Optional[int] = None,

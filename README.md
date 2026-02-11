@@ -51,7 +51,7 @@ data = generate_q_and_fibers(
 )
 data = attach_observations(
     data,
-    model="linear",
+    model="nonlinear",
     noise="normal",
     noise_scale=0.5,
     seed=1,
@@ -64,7 +64,7 @@ plot_geometry(data, show_r_labels=True)
 X = data["X"]
 y = data["Y_array"]
 
-plot_3d(X, y, title="linear + normal noise")
+plot_3d(X, y, title="nonlinear + normal noise")
 ```
 Running Operadic GPAV (OGPAV)
 
