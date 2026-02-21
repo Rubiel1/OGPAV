@@ -597,6 +597,14 @@ def gpav_op(
             for b in range(B_):
                 if a == b or not block_max_idx_list[b]:
                     continue
+                # Skip edges between blocks with equal value:
+                # When GPAV assigns identical values to two blocks whose
+                # elements interleave on a chain, reachability would
+                # produce both (a,b) and (b,a), creating a cycle.
+                # Equal-value blocks are at the same isotonic level and
+                # will be merged by any subsequent GPAV pass (Alg 4 step 4).
+                if block_list[a]['value'] == block_list[b]['value']:
+                    continue
                 if RA & set(block_max_idx_list[b]):
                     block_edges.append((a, b))
 

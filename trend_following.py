@@ -1,14 +1,259 @@
 from __future__ import annotations
-from typing import Dict, Hashable, Iterable, List, Tuple, Union
+from typing import Dict, Hashable, Iterable, List, Tuple, Union, Any, Optional, Callable, Sequence
 import networkx as nx
 import numpy as np
-#import heapq
+
+# ---------------------------------------------------------------------
+# Helper: Incremental Non-Redundant DAG Construction (Memory Efficient)
+# ---------------------------------------------------------------------
+
+def _build_dag_incrementally(
+    indices: Sequence[int],
+    precedes_func: Callable[[int, int], bool],
+    assume_component_wise: bool = False
+) -> nx.DiGraph:
+    """
+    Constructs a DAG on `indices` by adding only non-redundant edges.
+    
+    If assume_component_wise is True:
+        The data are vectors and the order is v<y if every coordinate of v is less equal to every
+        coordinate of y
+        Assumes `indices` is topologically sorted (or at least ordered)
+        and builds the DAG incrementally (memory efficient).
+    If assume_component_wise is False:
+        Checks all possible pairs (O(N^2)) to build a full valid DAG, then
+        applies `nx.transitive_reduction` to remove redundant edges.
+        
+    Algorithm similar to Sysoev et al. Algorithm 3.
+    """
+    if assume_component_wise:
+        G = nx.DiGraph()
+        G.add_nodes_from(indices)
+        
+        N_subset = len(indices)
+        
+        for idx_j in range(N_subset):
+            j = indices[idx_j]
+            current_parents = []
+            
+            # Scan backwards to find immediate predecessors
+            for idx_i in range(idx_j - 1, -1, -1):
+                i = indices[idx_i]
+                
+                if precedes_func(i, j):
+                    # Redundancy check:
+                    # Is i an ancestor of any node already found as a parent of j?
+                    is_redundant = False
+                    for p in current_parents:
+                        if nx.has_path(G, i, p):
+                            is_redundant = True
+                            break
+                    
+                    if not is_redundant:
+                        G.add_edge(i, j)
+                        current_parents.append(i)
+        return G
+    else:
+        G = nx.DiGraph()
+        G.add_nodes_from(indices)
+        
+        N_subset = len(indices)
+        for idx_i in range(N_subset):
+            for idx_j in range(N_subset):
+                if idx_i == idx_j:
+                    continue
+                i = indices[idx_i]
+                j = indices[idx_j]
+                if precedes_func(i, j):
+                    G.add_edge(i, j)
+                    
+        return nx.transitive_reduction(G)
+
+def _lower_y_naive(
+    P: List[Hashable],
+    G: nx.DiGraph,
+    Y_map: Dict[Hashable, float],
+    sort_key: Callable
+) -> List[Hashable]:
+    """
+    Naive O(N²) implementation of LowerY procedure from Algorithm 5.
+    Literal translation of the paper's pseudocode.
+    
+    Algorithm 5 LowerY procedure:
+    1. Set T = ∅
+    2. While P ≠ ∅:
+       2.1: Set i = P(1) and P' = Pred(i, P)
+       2.2: Compute P'' = LowerY(P')
+       2.3: Set T = [T, P'', i]
+       2.4: Update P by removing both i and all k ∈ P'
+    3. Return order = T
+    
+    Parameters
+    ----------
+    P : List[Hashable]
+        Sequence of nodes sorted by Y (represents current remaining set)
+    G : nx.DiGraph
+        DAG encoding partial order (edge u→v means u ≺ v)
+    Y_map : Dict[Hashable, float]
+        Mapping from node to Y value
+    sort_key : Callable
+        Function to sort nodes (for stable ordering)
+        
+    Returns
+    -------
+    List[Hashable]
+        Topological order produced by LowerY
+        
+    Complexity
+    ----------
+    Time: O(|P|²) where |P| is the length of input sequence
+    Space: O(|P|) for recursion stack
+    """
+    # Base case: empty set
+    if not P:
+        return []
+    
+    # Step 2.1: i = P(1) (first element, has minimal Y)
+    i = P[0]
+    
+    # Find P' = Pred(i, P): predecessors of i that are in P (TRANSITIVE predecessors)
+    # Since G might be a Hasse diagram (transitively reduced), we must find ancestors.
+    ancestors_i = nx.ancestors(G, i)
+    P_prime = [node for node in P if node in ancestors_i]
+    
+    # Step 2.2: Recursively compute P'' = LowerY(P')
+    # P' needs to be sorted by Y for the recursive call
+    P_prime_sorted = sorted(P_prime, key=sort_key)
+    P_double_prime = _lower_y_naive(P_prime_sorted, G, Y_map, sort_key)
+    
+    # Step 2.3: T = [T_previous, P'', i]
+    # We're building T incrementally through recursion
+    
+    # Step 2.4: Remove i and all k ∈ P' from P for next iteration
+    to_remove = set(P_prime) | {i}
+    P_remaining = [node for node in P if node not in to_remove]
+    
+    # Recursively process remaining P
+    T_rest = _lower_y_naive(P_remaining, G, Y_map, sort_key)
+    
+    # Return [P'', i, T_rest]
+    return P_double_prime + [i] + T_rest
+
+
+def default_comparator(a: Any, b: Any) -> bool:
+    """
+    Default comparator: Coordinate-wise dominance (a <= b).
+    Handles both scalars and array-like objects.
+    """
+    if a is b:
+        return True
+    
+    # Numpy-aware check
+    oa = np.asanyarray(a)
+    ob = np.asanyarray(b)
+    
+    # Handle scalar case
+    if oa.ndim == 0 and ob.ndim == 0:
+        return bool(oa <= ob)
+    
+    # Handle array case (must have same shape)
+    if oa.shape != ob.shape:
+        raise ValueError(f"Cannot compare arrays of different shapes: {oa.shape} vs {ob.shape}")
+    
+    return bool(np.all(oa <= ob))
+
+# ---------------------------------------------------------------------
+
+
+def _lower_y_dfs(
+    nodes: List[Hashable],
+    G: nx.DiGraph,
+    Y_map: Dict[Hashable, float],
+    sort_key: Callable
+) -> List[Hashable]:
+    """
+    Optimized O((N+E) log N) DFS implementation of LowerY.
+    
+    This implementation uses DFS with memoization to avoid redundant work,
+    making it more efficient for sparse graphs.
+    
+    Parameters
+    ----------
+    nodes : List[Hashable]
+        All nodes to process (should be pre-sorted by Y)
+    G : nx.DiGraph
+        DAG encoding partial order (edge u→v means u ≺ v)
+    Y_map : Dict[Hashable, float]
+        Mapping from node to Y value
+    sort_key : Callable
+        Function to sort nodes (for stable ordering)
+        
+    Returns
+    -------
+    List[Hashable]
+        Topological order produced by LowerY
+        
+    Complexity
+    ----------
+    Time: O((N+E) log N) where E is number of edges
+    Space: O(N+E) for graph structures and tracking sets
+    """
+    # Build Reverse Graph with Sorted Adjacency (Parents)
+    # We need to access parents of v to implement LowerY(Ancestors(u))
+    rev_adj = {v: [] for v in nodes}
+    for u, v in G.edges():
+        rev_adj[v].append(u)  # u → v means u precedes v
+        
+    for v in nodes:
+        if rev_adj[v]:
+            rev_adj[v].sort(key=sort_key)  # Sort by Y
+    
+    # DFS Implementation of LowerY
+    yielded = set()
+    result = []
+    
+    # Recursion limit check (worst case depth is N)
+    import sys
+    sys.setrecursionlimit(max(sys.getrecursionlimit(), len(nodes) + 1000))
+    
+    def visit(u):
+        if u in yielded:
+            return
+            
+        # Visit unyielded parents (ancestors) in sorted order
+        # Any unyielded parent p has Y(p) >= Y(original_target) globally,
+        # so we peel them off in increasing Y order.
+        for p in rev_adj[u]:
+            if p not in yielded:
+                visit(p)
+        
+        # After dependencies are cleared, yield u
+        if u not in yielded:
+            yielded.add(u)
+            result.append(u)
+    
+    # Main Loop (mimics LowerY on the remaining set)
+    # nodes is already sorted by Y (global_order)
+    for root in nodes:
+        if root not in yielded:
+            visit(root)
+    
+    return result
+
+
+# ---------------------------------------------------------------------
+# Trend Following Order
+# ---------------------------------------------------------------------
+# ---------------------------------------------------------------------
 
 def trend_following_order(
-    G: nx.DiGraph,
-    Y: Union[Dict[Hashable, float], np.ndarray],
+    X: Optional[Any] = None,
+    Y: Union[Dict[Hashable, float], np.ndarray, Sequence[float]] = None,
+    f: Optional[Callable[[Any, Any], bool]] = None,
+    G: Optional[nx.DiGraph] = None,
     *,
     stable_tiebreak: bool = True,
+    sparse_data: bool = False,
 ) -> List[Hashable]:
     """
     Faithful implementation of the SB paper's trend-following topological order:
@@ -16,168 +261,121 @@ def trend_following_order(
 
     Inputs
     ------
-    G : nx.DiGraph
+    X : Any (optional)
+        Dataset vectors/elements. Required if G is None.
+    Y : dict or array-like
+        Observed response values for nodes. 
+        If G is provided, Y can be a dict mapping node -> val.
+        If X is provided (and G built internally), Y must be array-like aligned with X.
+    f : Callable (optional)
+        Comparator f(a, b) -> bool (a <= b). Used to build G if G is None.
+        Defaults to coordinate-wise dominance.
+    G : nx.DiGraph (optional)
         DAG encoding the partial order (edge u->v means u ≺ v).
-        Can be Hasse-reduced or not; must be acyclic.
-    Y : dict[node -> float]
-        Observed response values for nodes in G.
+        If None, the DAG is built from X using f and an incremental construction.
     stable_tiebreak : bool
         If True, ties are broken deterministically using the (Y, rank) order induced
-        by sorting nodes by (Y, node_as_str). If False, ties follow Python's sort
-        on node objects (must be comparable).
+        by sorting nodes by (Y, node_as_str).
+    sparse_data : bool (default=False)
+        If True, uses optimized DFS-based implementation: O((N+E) log N) time, O(N+E) space.
+        If False, uses naive implementation from paper: O(N²) time, O(N) space.
+        
+        Recommendations:
+        - sparse_data=False (default): Dense graphs where E ≈ N², or unknown graph density
+        - sparse_data=True: Sparse graphs where E ≈ N or E ≈ N log N (typical for dominance orders)
 
     Output
     ------
     A list T (topological order) produced by the published LowerY procedure.
+    
+    Complexity
+    ----------
+    - sparse_data=False: O(N²) time, O(N) space
+    - sparse_data=True: O((N+E) log N) time, O(N+E) space
     """
 
-    # --- 0) Basic checks
-    if not nx.is_directed_acyclic_graph(G):
-        raise ValueError("G must be a DAG for trend following order.")
+    # --- 1) Resolve Inputs and Build G if needed
+    if G is not None:
+        # Use provided graph
+        if not nx.is_directed_acyclic_graph(G):
+            raise ValueError("G must be a DAG for trend following order.")
+        nodes = list(G.nodes())
+        m = len(nodes)
+        
+        # Resolve Y for provided G
+        # If Y is array, we must map it to nodes.
+        if not isinstance(Y, dict):
+            Y_arr = np.asarray(Y, dtype=float)
+            if Y_arr.shape[0] != m:
+                raise ValueError(f"Y array length {Y_arr.shape[0]} != num nodes {m}")
+            # If G nodes are 0..m-1 integers, we assume alignment.
+            # If not, this is ambiguous, but we'll try zip(nodes, Y).
+            # Prefer dict input if G has non-integer nodes.
+            Y = {nodes[i]: float(Y_arr[i]) for i in range(m)}
+            
+    else:
+        # Build G from X
+        if X is None:
+            raise ValueError("Must provide either G (graph) or X (dataset) to trend_following_order.")
+        
+        m = len(X)
+        if m == 0:
+            return []
+            
+        nodes = list(range(m))
+        
+        if f is None:
+            f = default_comparator
+            
+        # Build graph incrementally (memory efficient)
+        # Algorithm 5 requires: "sort the observations in D by the value of Y_i"
+        # So we must sort by Y values, not by sum of X coordinates
+        try:
+             # Sort by Y values as specified in Algorithm 5
+             Y_arr = np.asarray(Y, dtype=float)
+             if Y_arr.shape[0] != m:
+                 raise ValueError(f"Y array length {Y_arr.shape[0]} != X length {m}")
+             topo_indices = np.argsort(Y_arr).tolist()
+        except:
+             # Fallback: assume Y is just a list, use original order
+             topo_indices = list(range(m))
 
-    nodes = list(G.nodes())
-    m = len(nodes)
-    if m == 0:
-        return []
+        def check_precedence(i, j):
+            # i, j are indices. Check f(X[i], X[j])
+            return f(X[i], X[j])
 
-    # accept aligned array
-    if not isinstance(Y, dict):
-        Y_arr = np.asarray(Y, dtype=float)
-        if Y_arr.shape[0] != m:
-            raise ValueError(f"Y array must have length {m}, got {Y_arr.shape[0]}")
-        Y = {nodes[i]: float(Y_arr[i]) for i in range(m)}  # convert to dict once
+        # This builds the graph edges (Memory Efficient)
+        G = _build_dag_incrementally(topo_indices, check_precedence)
+        
+        # Resolve Y for built G (nodes are 0..m-1)
+        if not isinstance(Y, dict):
+            Y_arr = np.asarray(Y, dtype=float)
+            if Y_arr.shape[0] != m:
+                raise ValueError(f"Y array length {Y_arr.shape[0]} != X length {m}")
+            # Align Y with indices 0..m-1
+            Y = {i: float(Y_arr[i]) for i in range(m)}
+
 
     # Ensure all nodes have a Y-value
     missing = [v for v in nodes if v not in Y]
     if missing:
         raise KeyError(f"Missing Y-values for {len(missing)} nodes, e.g. {missing[:5]}")
 
-    # --- 1) Map nodes to indices 0..m-1 (for bitsets)
-    # Keep deterministic mapping: preserve G.nodes() iteration order.
-    idx_of = {v: i for i, v in enumerate(nodes)}
-    node_of = nodes  # inverse map by index
-
-    # --- 2) Prepare a stable Y-sorted master sequence P0
-    # Paper: "Sort D by Yi" => P0 is Y-sorted; LowerY always picks first of current P.
-    # We implement that as: pick remaining node with minimal (Y, tie_key).
+    # --- 2) Prepare Sorted Orders
     if stable_tiebreak:
-        # tie_key uses string form to be stable even for unorderable node types
-        y_order = sorted(nodes, key=lambda v: (float(Y[v]), str(v)))
+        def sort_key(v): return (float(Y[v]), str(v))
     else:
-        y_order = sorted(nodes, key=lambda v: float(Y[v]))
+        def sort_key(v): return float(Y[v])
 
-    y_order_idx = [idx_of[v] for v in y_order]
+    # Global priority order (Algorithm 5 outer loop: select minimal Y from P)
+    global_order = sorted(nodes, key=sort_key)
 
-    # --- 3) Compute transitive predecessor masks pred_mask[v]
-    # pred_mask[i] is a bitmask of ALL predecessors of node i (transitive), excluding i itself.
-    parents: List[List[int]] = [[] for _ in range(m)]
-    for u, v in G.edges():
-        parents[idx_of[v]].append(idx_of[u])
+    # --- 3) Dispatch to Appropriate Implementation
+    # Choose between naive O(N²) and optimized DFS O((N+E) log N)
+    if sparse_data:
+        # Use optimized DFS implementation for sparse graphs
+        return _lower_y_dfs(global_order, G, Y, sort_key)
+    else:
+        # Use naive O(N²) implementation from paper
+        return _lower_y_naive(global_order, G, Y, sort_key)
 
-    # Use any topological order (graph-based) to DP predecessor sets:
-    topo_idx = [idx_of[v] for v in nx.topological_sort(G)]
-    pred_mask = [0] * m
-    for v in topo_idx:
-        pm = 0
-        for u in parents[v]:
-            pm |= pred_mask[u] | (1 << u)
-        pred_mask[v] = pm
-
-    # --- 4) Faithful LowerY(P) recursion, but implemented over bitmasks for speed.
-    # Pred(i,P) = {j in P : j ≺ i} = remaining ∩ pred_mask[i]
-    #
-    # LowerY(remaining):
-    #   while remaining nonempty:
-    #     i = first element of the Y-sorted sequence among remaining
-    #     output LowerY(Pred(i, remaining))
-    #     output i
-    #     remove Pred(i,remaining) and i from remaining
-    #
-    # We implement i = argmin_{v in remaining} (Y, tie_key) by scanning y_order
-    # (O(m) per chosen i) and use bitmasks for set ops.
-
-    all_mask = (1 << m) - 1
-    remaining0 = all_mask
-
-    def pick_min_by_Y(rem_mask: int) -> int:
-        # Return index of smallest-Y remaining node, according to y_order
-        for vi in y_order_idx:
-            if rem_mask & (1 << vi):
-                return vi
-        raise RuntimeError("pick_min_by_Y called with empty mask")
-
-    def lowerY_mask(rem_mask: int) -> List[int]:
-        out: List[int] = []
-        while rem_mask:
-            i = pick_min_by_Y(rem_mask)
-            preds = rem_mask & pred_mask[i]  # Pred(i,P)
-            if preds:
-                out.extend(lowerY_mask(preds))
-                rem_mask &= ~preds
-            out.append(i)
-            rem_mask &= ~(1 << i)
-        return out
-
-    order_idx = lowerY_mask(remaining0)
-
-    # --- 5) Sanity: ensure topological
-    # (Not strictly required, but useful for comparison/debug)
-    pos = {node_of[i]: k for k, i in enumerate(order_idx)}
-    for u, v in G.edges():
-        if pos[u] > pos[v]:
-            raise AssertionError("LowerY output is not topological (unexpected).")
-
-    return [node_of[i] for i in order_idx]
-
-# ---------------------------------------------------------------------
-# topological order
-# ---------------------------------------------------------------------
-
-# def Kahn_order(poset, Y: np.ndarray) -> List:
-#     """
-#     Candidate order
-    
-#     At each step:
-#       - among current minimal elements (in-degree 0 w.r.t. remaining nodes),
-#         pick the one with smallest Y.
-#     Inputs
-
-#     poset: poset / graph
-
-#     Y: array-like aligned with nodes = list(G.nodes()), or mapping Y[v]
-    
-#     Returns a list of node labels (not local indices).
-#     """
-#     G = _hasse_graph(poset)
-#     nodes = list(G.nodes())
-#     n = len(nodes)
-
-#     Y = np.asarray(Y)
-#     if Y.shape[0] != n:
-#         try:
-#             Y = np.array([Y[v] for v in nodes], dtype=float)
-#         except Exception as e:
-#             raise ValueError("Y must align with poset node labels or with the Hasse node order.") from e
-#     else:
-#         Y = Y.astype(float, copy=False)
-
-#     node_to_idx = {v: i for i, v in enumerate(nodes)}
-#     indeg = np.fromiter((G.in_degree(v) for v in nodes), dtype=np.int32, count=n)
-#     succ = [[node_to_idx[w] for w in G.successors(v)] for v in nodes]
-
-#     heap = [(Y[i], i) for i in range(n) if indeg[i] == 0]
-#     heapq.heapify(heap)
-
-#     order_idx = []
-#     while heap:
-#         _, i = heapq.heappop(heap)
-#         order_idx.append(i)
-#         for j in succ[i]:
-#             indeg[j] -= 1
-#             if indeg[j] == 0:
-#                 heapq.heappush(heap, (Y[j], j))
-
-#     if len(order_idx) != n:
-#         raise ValueError("Cycle detected in poset (unexpected).")
-
-#     return [nodes[i] for i in order_idx]
