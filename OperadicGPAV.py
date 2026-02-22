@@ -103,7 +103,12 @@ def _process_fiber_task(
     Returns: (index, block_count, mins, maxs)
     """
     try:
-        # 1. Build Hasse from array elements
+        # 1. Antichain Bypass
+        if f is None:
+            from border_cases import package_local_antichain
+            return package_local_antichain(i, X_i, local_Y_indices, Y_snapshot, temp_dir)
+
+        # 2. Build Hasse from array elements
         n_i = len(X_i)
         
         # Sort heuristic for better incremental construction
@@ -118,7 +123,12 @@ def _process_fiber_task(
             
         H_R = _build_dag_incrementally(topo_indices, check_precedence, assume_component_wise)
         
-        # 2. Prepare A_i (sequential node indices 0, 1, 2, ...)
+        # 3. Dynamic Antichain Bypass
+        if H_R.number_of_edges() == 0:
+            from border_cases import package_local_antichain
+            return package_local_antichain(i, X_i, local_Y_indices, Y_snapshot, temp_dir)
+
+        # 4. Prepare A_i (sequential node indices 0, 1, 2, ...)
         A_i = {j: float(Y_snapshot[glob_idx]) 
                for j, glob_idx in enumerate(local_Y_indices)}
         
@@ -263,21 +273,17 @@ def OperadicGPAV(
     if not isinstance(Q, nx.DiGraph):
         raise TypeError("Q must be a NetworkX DiGraph")
     
-    
-    # Create indices_list if not provided
-    if indices_list is None:
-        indices_list = create_lexicographic_mapping(R_datasets)
-    
     # Y must be array
     Y = np.asarray(Y, dtype=float)
     
     # Handle f: single function or list of functions
     if f is None:
         # Default: coordinate-wise comparison for all R_i
-        f_list = None  # Will use default_comparator for each
+        f_list = None
+        f_global = None  # Ensure this is explicitly defined
     elif callable(f):
         # Single function for all R_i
-        f_list = None  # Will use this f for each
+        f_list = None
         f_global = f
     elif isinstance(f, (list, tuple)):
         # List of functions, one per R_i
@@ -321,6 +327,22 @@ def OperadicGPAV(
         os.makedirs(temp_dir_path, exist_ok=True)
 
     try:
+        if Q.number_of_edges() == 0:
+            from border_cases import handle_q_no_edges
+            return handle_q_no_edges(
+                m=m,
+                R_datasets=R_datasets,
+                indices_list=indices_list,
+                Y=Y,
+                f_list=f_list,
+                f_global=f_global,
+                segment_topo_orders=segment_topo_orders,
+                use_trend_following_first=use_trend_following_first,
+                assume_component_wise=assume_component_wise,
+                max_workers=max_workers,
+                verbose=verbose
+            )
+
         # --- 2. STAGE 1: LOCAL PROCESSING (Parallel) ---
         if verbose:
             print(f"Stage 1: Processing {m} fibers (max_workers={max_workers})...")
@@ -338,16 +360,41 @@ def OperadicGPAV(
              inputs = zip(range(m), R_datasets, indices_list)
 
         # Helper: select comparator for fiber i
-        # Capture f_global safely to avoid closure issues
-        _f_global_ref = f_global if 'f_global' in locals() else None
         def _get_comparator(i):
-            if f_list is not None:
-                comp = f_list[i] if i < len(f_list) else None
-                return comp if comp is not None else default_comparator
-            elif _f_global_ref is not None:
-                return _f_global_ref
-            else:
+            if assume_component_wise:
                 return default_comparator
+                
+            if f_list is not None:
+                return f_list[i] if i < len(f_list) else None
+            else:
+                return f_global
+
+        # Pickling Check: Multiprocessing crashes if it tries to pickle a lambda or nested function
+        if max_workers != 1:
+            can_pickle = True
+            def _is_picklable(obj):
+                if obj is None: return True
+                try:
+                    pickle.dumps(obj)
+                    return True
+                except Exception:
+                    return False
+
+            if f_global is not None and not _is_picklable(f_global):
+                can_pickle = False
+            if f_list is not None:
+                for func in f_list:
+                    if not _is_picklable(func):
+                        can_pickle = False
+                        break
+
+            if not can_pickle:
+                warnings.warn(
+                    "One or more custom comparators cannot be pickled (e.g., lambda functions). "
+                    "Forcing max_workers=1 (sequential execution) to prevent multiprocessing crashes.",
+                    UserWarning
+                )
+                max_workers = 1
 
         # Execution Strategy:
         # - max_workers=1: sequential (no pickling overhead)

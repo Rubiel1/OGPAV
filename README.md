@@ -102,7 +102,8 @@ print(f"Output range: [{u.min():.2f}, {u.max():.2f}]")
   Comparator function(s) defining the partial order on fiber elements.
   - If **single function**: `f(a, b) -> bool` used for all fibers
   - If **list of functions**: `[f_0, ..., f_{m-1}]`, one per fiber
-  - If **None**: uses coordinate-wise comparison `a <= b ⟺ a[k] <= b[k] ∀k`
+  - If **None and `assume_component_wise=True`**: uses geometric coordinate-wise comparison `a <= b ⟺ a[k] <= b[k] ∀k`
+  - **[NEW RULE] If `None` and `assume_component_wise=False`**: the algorithm assumes the corresponding fiber $R_i$ is an entirely disjoint union of points (antichain) and skips all $O(N_i^3)$ local DAG constructions and $gpav\_seg$ steps, feeding trivially into Stage 2.
 
 - **`indices_list`** *(List[List[int]], default=None)*:  
   Explicit mapping of Y indices to fibers. If None, assumes lexicographic concatenation.

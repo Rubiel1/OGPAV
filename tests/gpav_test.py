@@ -43,6 +43,7 @@ class TestArrayStack:
             Q=Q,
             R_datasets=R_datasets,
             Y=Y,
+            assume_component_wise=True,
             max_workers=1,
             verbose=verbose
         )
@@ -68,6 +69,7 @@ class TestArrayStack:
             Q=Q,
             R_datasets=R_datasets,
             Y=Y,
+            assume_component_wise=True,
             max_workers=1,
             verbose=verbose
         )
@@ -94,6 +96,7 @@ class TestArrayStack:
             Q=Q,
             R_datasets=R_datasets,
             Y=Y,
+            assume_component_wise=True,
             max_workers=1,
             verbose=verbose
         )
@@ -116,10 +119,10 @@ class TestArrayStack:
         Y = np.concatenate([np.zeros(10), np.ones(10)])
         
         # Sequential
-        u_seq = OperadicGPAV(Q, R_datasets, Y, max_workers=1, verbose=False)
+        u_seq = OperadicGPAV(Q, R_datasets, Y, assume_component_wise=True, max_workers=1, verbose=False)
         
         # Parallel
-        u_par = OperadicGPAV(Q, R_datasets, Y, max_workers=2, verbose=False)
+        u_par = OperadicGPAV(Q, R_datasets, Y, assume_component_wise=True, max_workers=2, verbose=False)
         
         np.testing.assert_allclose(u_seq, u_par, 
             err_msg="Parallel result differs from sequential")
@@ -209,11 +212,12 @@ class TestArrayStack:
                 return True
             return False
         
+        from trend_following import default_comparator
         # Use per-fiber comparators
         f_list = [
-            None,           # R_0: default
-            r1_comparator,  # R_1: exact PO from PoSet test
-            None            # R_2: default
+            default_comparator,  # R_0: default
+            r1_comparator,       # R_1: exact PO from PoSet test
+            default_comparator   # R_2: default
         ]
         
         u = OperadicGPAV(
@@ -302,11 +306,12 @@ class TestArrayStack:
             i, j = int(a[0]), int(b[0])
             return i == j  # Only reflexive, no order between 0 and 1
         
+        from trend_following import default_comparator
         u = OperadicGPAV(
             Q=Q,
             R_datasets=R_datasets,
             Y=Y,
-            f=[r0_comp, None, None],
+            f=[r0_comp, default_comparator, default_comparator],
             max_workers=1,
             verbose=False
         )
@@ -418,12 +423,13 @@ class TestArrayStack:
             edges = {(0,3), (1,4), (2,5), (0,4), (1,5), (2,3), (0,5), (1,3), (2,4)}
             return (i, j) in edges
         
+        from trend_following import default_comparator
         # First order for R_1
         u1 = OperadicGPAV(
             Q=Q,
             R_datasets=R_datasets,
             Y=Y,
-            f=[None, r1_comp, None],
+            f=[default_comparator, r1_comp, default_comparator],
             segment_topo_orders=[[0], [2, 1, 0, 3, 4, 5], [0]],
             max_workers=1,
             verbose=False
@@ -434,7 +440,7 @@ class TestArrayStack:
             Q=Q,
             R_datasets=R_datasets,
             Y=Y,
-            f=[None, r1_comp, None],
+            f=[default_comparator, r1_comp, default_comparator],
             segment_topo_orders=[[0], [2, 1, 0, 4, 3, 5], [0]],
             max_workers=1,
             verbose=False
@@ -739,6 +745,67 @@ class TestArrayStack:
 
         shutil.rmtree(cache_dir)
 
+    def test_border_cases(self):
+        """
+        Tests the border case optimizations in OperadicGPAV:
+        1. Q with no edges (m > 1) completely bypassing Stage 2.
+        2. R_i Local Antichain where graph has strictly 0 edges.
+        3. Multiprocessing lambda picklability fallback.
+        """
+        # Test 1: Q without edges (Stage 2 bypass)
+        Q_no_edges = nx.DiGraph()
+        Q_no_edges.add_nodes_from([0, 1, 2])
+        
+        R_no_edges = [
+            np.array([[0], [1]]),
+            np.array([[2], [3]]),
+            np.array([[4], [5]])
+        ]
+        # Y values map exactly to nodes 0 and 1 since there's no interactions
+        # Local GPAV forces isotonicity on coordinate values locally
+        # Since we use default geometric on 1D representations:
+        # Fiber 0: [0] <= [1] -> Y[0] <= Y[1] (4.0 > 1.0 -> pools to 2.5)
+        # Fiber 1: [2] <= [3] -> Y[2] <= Y[3] (5.0 > 2.0 -> pools to 3.5)
+        # Fiber 2: [4] <= [5] -> Y[4] <= Y[5] (6.0 <= 7.0 -> is already isotonic, no pooling!)
+        Y_no_edges = np.array([4.0, 1.0, 5.0, 2.0, 6.0, 7.0])
+        u1 = OperadicGPAV(
+            Q=Q_no_edges, 
+            R_datasets=R_no_edges, 
+            Y=Y_no_edges, 
+            assume_component_wise=True, # Critical: Forces geometric construction so it actually pools 4.0 and 1.0!
+            max_workers=1, 
+            verbose=False
+        )
+        np.testing.assert_allclose(u1, [2.5, 2.5, 3.5, 3.5, 6.0, 7.0], err_msg="Q without edges fast-path failed")
+
+        # Test 2: Local Antichain with Lambda Fallback
+        Q_chain = nx.DiGraph([(0, 1)]) # Forces global polling
+        
+        # A lambda function strictly forces NO local edges (False).
+        # It also triggers the max_workers picklability fallback because it's a lambda!
+        f_antichain = lambda a, b: False
+        
+        # Fiber 0: [5.0, 3.0] are disjoint.
+        # Fiber 1: [4.0, 1.0] are disjoint.
+        # Global polling: Fiber 0 must be <= Fiber 1.
+        # Max of Fiber 0 = 5.0. Min of Fiber 1 = 1.0. 
+        # They will instantly pool globally.
+        Y_antichain = np.array([5.0, 3.0, 4.0, 1.0])
+        R_antichain = [np.array([[0],[0]]), np.array([[0],[0]])]
+        
+        with pytest.warns(UserWarning, match="cannot be pickled"):
+            u2 = OperadicGPAV(
+                Q=Q_chain, 
+                R_datasets=R_antichain, 
+                Y=Y_antichain, 
+                f=f_antichain, 
+                max_workers=4, # Request parallel to test downgrade
+                verbose=False
+            )
+            
+        # Due to 5 block interacting with 1 block over the Q-edge, they merge.
+        assert np.max(u2[:2]) <= np.min(u2[2:]), "Global Q constraint violated during antichain processing"
+
 
 if __name__ == "__main__":
     # Run tests
@@ -783,4 +850,6 @@ if __name__ == "__main__":
     t.test_trend_following_flags()
     print("Running test_dataset_loaders...")
     t.test_dataset_loaders()
+    print("Running test_border_cases...")
+    t.test_border_cases()
     print("\n All tests passed!")
