@@ -700,6 +700,46 @@ class TestArrayStack:
 
 
 
+    def test_dataset_loaders(self):
+        """
+        Tests the behavior of dataset.py CustomFiberDataset:
+        - Alphabetic directory parsing
+        - Zip archive explicit mapping (including length swapping)
+        """
+        from dataset import CustomFiberDataset
+        import zipfile
+        import tempfile
+
+        cache_dir = tempfile.mkdtemp(prefix="ogpav_test_loaders_")
+        dump_dir = os.path.join(cache_dir, 'dummy_data')
+        os.makedirs(dump_dir, exist_ok=True)
+        
+        # Fiber 1 = 10 rows. Fiber 0 = 5 rows.
+        np.save(os.path.join(dump_dir, 'fiber_1.npy'), np.ones((10, 2)))
+        np.save(os.path.join(dump_dir, 'fiber_0.npy'), np.zeros((5, 2)))
+
+        zip_path = os.path.join(cache_dir, 'dummy.zip')
+        with zipfile.ZipFile(zip_path, 'w') as z:
+            z.write(os.path.join(dump_dir, 'fiber_0.npy'), 'fiber_0.npy')
+            z.write(os.path.join(dump_dir, 'fiber_1.npy'), 'fiber_1.npy')
+
+        # Test 1: Alphabetic Sorting (Expects warning, sorts 0 then 1)
+        with pytest.warns(UserWarning, match="Defaulting to sorting files alphabetically"):
+            ds1 = CustomFiberDataset(dump_dir)
+            lengths1 = ds1.get_fiber_lengths()
+            assert lengths1 == [5, 10], f"Alphabetic sort failed. Got lengths: {lengths1}"
+
+        # Test 2: Mapped Zip Archive (Node 0 -> fiber 1, Node 1 -> fiber 0)
+        ds2 = CustomFiberDataset(zip_path, node_to_file={0: 'fiber_1.npy', 1: 'fiber_0.npy'})
+        lengths2 = ds2.get_fiber_lengths()
+        
+        assert lengths2 == [10, 5], f"Mapped sort failed. Got mapped lengths: {lengths2}"
+        assert ds2[0].shape == (10, 2), "Fiber 0 did not map correctly"
+        assert ds2[1].shape == (5, 2), "Fiber 1 did not map correctly"
+
+        shutil.rmtree(cache_dir)
+
+
 if __name__ == "__main__":
     # Run tests
     t = TestArrayStack()
@@ -741,4 +781,6 @@ if __name__ == "__main__":
     t.test_operadic_lazy_large_scale()
     print("Running test_trend_following_flags...")
     t.test_trend_following_flags()
+    print("Running test_dataset_loaders...")
+    t.test_dataset_loaders()
     print("\n All tests passed!")

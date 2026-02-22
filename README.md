@@ -194,7 +194,42 @@ u = OperadicGPAV(
 print(f"Output: {u}")
 ```
 
+### Example: Loading Fibers from a Directory or `.zip`
 
+The `dataset.py` library provides `CustomFiberDataset`, allowing you to load fiber subsets lazily from `.npy`, `.csv`, or `.txt` files directly off disk or extracted from a Zip archive without consuming full memory.
+
+```python
+import numpy as np
+import networkx as nx
+from OperadicGPAV import OperadicGPAV
+from dataset import CustomFiberDataset
+
+# Load fiber data locally without storing it completely in memory
+# - Automatically enables fast memory-mapped `get_fiber_lengths()` for `.npy`
+dataset = CustomFiberDataset(
+    source_path="my_large_fibers.zip", 
+    
+    # Map Q-nodes to raw data files directly:
+    node_to_file={
+        0: 'R_0.npy',
+        1: 'R_1.csv',
+        2: 'R_2.txt'
+    }
+    # NOTE: If `node_to_file` is None, files are sorted alphabetically 
+    # and node 0 gets mapped to the first alphabetical file, with a Warning.
+)
+
+# Q-nodes chain: 0 -> 1 -> 2
+Q = nx.DiGraph([(0, 1), (1, 2)])
+Y = np.random.uniform(0, 5, sum(dataset.get_fiber_lengths()))
+
+u = OperadicGPAV(
+    Q=Q,
+    R_datasets=dataset,
+    Y=Y,
+    max_workers=2
+)
+```
 
 
 Notes on Correctness
