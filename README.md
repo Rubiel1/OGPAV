@@ -148,8 +148,8 @@ R_datasets = [
 
 Y = np.array([1.0, 3.0, 2.0, 5.0, 4.0])
 
-# Custom comparator: compare by sum of coordinates
-def sum_comparator(a, b):
+# Custom comparator
+def custom_comparator(a, b):
     return a[0] < b[0]
 
 # Run with custom comparator
@@ -157,7 +157,7 @@ u = OperadicGPAV(
     Q=Q,
     R_datasets=R_datasets,
     Y=Y,
-    f=sum_comparator,  # Apply to all fibers
+    f=custom_comparator,  # Apply to all fibers
     max_workers=1,
     assume_component_wise=False,
     verbose=False
@@ -188,7 +188,7 @@ u = OperadicGPAV(
     Y=Y,
     f=[None, r1_comparator],  # None uses default for R_0
     max_workers=1,
-    assume_component_wise=False,
+    assume_component_wise=False, #you cannot have this as True if you have custom comparators
 )
 
 print(f"Output: {u}")

@@ -285,6 +285,18 @@ def OperadicGPAV(
         f_global = None
     else:
         raise TypeError("f must be a callable, a list of callables, or None")
+
+    if assume_component_wise and f is not None:
+        # We need to ensure that the user doesn't pass assume_component_wise=True with a custom comparator, 
+        # as assume_component_wise assumes default geometric properties for its incremental graph construction.
+        if isinstance(f, (list, tuple)) and all(comp is None for comp in f):
+            pass # Exception: All elements in f are None, so it safely defaults entirely to geometric
+        else:
+            raise ValueError(
+                "Cannot set `assume_component_wise=True` when a custom comparator `f` is provided. "
+                "The `assume_component_wise` flag uses a sum-of-coordinates heuristic that is only guaranteed "
+                "to be correct for the default geometric component-wise comparison."
+            )
     
     if indices_list is None:# Warning is best.
         warnings.warn(
@@ -330,7 +342,8 @@ def OperadicGPAV(
         _f_global_ref = f_global if 'f_global' in locals() else None
         def _get_comparator(i):
             if f_list is not None:
-                return f_list[i] if i < len(f_list) else default_comparator
+                comp = f_list[i] if i < len(f_list) else None
+                return comp if comp is not None else default_comparator
             elif _f_global_ref is not None:
                 return _f_global_ref
             else:
