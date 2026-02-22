@@ -30,10 +30,10 @@ import shutil
 import concurrent.futures
 
 # Use optimized components
-from trend_following import trend_following_order, _build_dag_incrementally, default_comparator
-from gpav import gpav_seg
-from sb_gpav import _get_block_extrema, _block_precedes
-import geometric_sb_dataset 
+from utils.trend_following import trend_following_order, _build_dag_incrementally, default_comparator
+from utils.gpav import gpav_seg
+from utils.sb_gpav import _get_block_extrema, _block_precedes
+import utils.geometric_sb_dataset as geometric_sb_dataset 
 
 # --- Aliases ---
 NodeLabel = Hashable
@@ -105,7 +105,7 @@ def _process_fiber_task(
     try:
         # 1. Antichain Bypass
         if f is None:
-            from border_cases import package_local_antichain
+            from utils.border_cases import package_local_antichain
             return package_local_antichain(i, X_i, local_Y_indices, Y_snapshot, temp_dir)
 
         # 2. Build Hasse from array elements
@@ -125,7 +125,7 @@ def _process_fiber_task(
         
         # 3. Dynamic Antichain Bypass
         if H_R.number_of_edges() == 0:
-            from border_cases import package_local_antichain
+            from utils.border_cases import package_local_antichain
             return package_local_antichain(i, X_i, local_Y_indices, Y_snapshot, temp_dir)
 
         # 4. Prepare A_i (sequential node indices 0, 1, 2, ...)
@@ -328,7 +328,7 @@ def OperadicGPAV(
 
     try:
         if Q.number_of_edges() == 0:
-            from border_cases import handle_q_no_edges
+            from utils.border_cases import handle_q_no_edges
             return handle_q_no_edges(
                 m=m,
                 R_datasets=R_datasets,

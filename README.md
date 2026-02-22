@@ -39,7 +39,7 @@ Generate structured geometric data:
 ```python
 import numpy as np
 import networkx as nx
-from geometric_sb_dataset import generate_dataset_lazy
+from utils.geometric_sb_dataset import generate_dataset_lazy
 from OperadicGPAV import OperadicGPAV
 
 # Generate dataset with 3 fibers
@@ -203,7 +203,7 @@ The `dataset.py` library provides `CustomFiberDataset`, allowing you to load fib
 import numpy as np
 import networkx as nx
 from OperadicGPAV import OperadicGPAV
-from dataset import CustomFiberDataset
+from utils.dataset import CustomFiberDataset
 
 # Load fiber data locally without storing it completely in memory
 # - Automatically enables fast memory-mapped `get_fiber_lengths()` for `.npy`

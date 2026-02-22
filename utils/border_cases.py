@@ -14,8 +14,8 @@ from typing import Any, Callable, List, Dict, Optional
 import os
 import pickle
 
-from gpav import gpav_seg
-from sb_gpav import _get_block_extrema
+from .gpav import gpav_seg
+from .sb_gpav import _get_block_extrema
 
 def handle_q_no_edges(
     m: int,
@@ -37,7 +37,7 @@ def handle_q_no_edges(
     """
     import concurrent.futures
     from OperadicGPAV import _process_fiber_task
-    from trend_following import default_comparator
+    from .trend_following import default_comparator
     import tempfile
     
     u_final = np.zeros_like(Y, dtype=float)

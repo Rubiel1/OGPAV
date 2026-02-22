@@ -5,8 +5,8 @@ import os
 import shutil
 
 from OperadicGPAV import OperadicGPAV, create_lexicographic_mapping
-from sb_gpav import sb_gpav
-from geometric_sb_dataset import generate_dataset_lazy
+from utils.sb_gpav import sb_gpav
+from utils.geometric_sb_dataset import generate_dataset_lazy
 
 verbose = False
 
@@ -212,7 +212,7 @@ class TestArrayStack:
                 return True
             return False
         
-        from trend_following import default_comparator
+        from utils.trend_following import default_comparator
         # Use per-fiber comparators
         f_list = [
             default_comparator,  # R_0: default
@@ -306,7 +306,7 @@ class TestArrayStack:
             i, j = int(a[0]), int(b[0])
             return i == j  # Only reflexive, no order between 0 and 1
         
-        from trend_following import default_comparator
+        from utils.trend_following import default_comparator
         u = OperadicGPAV(
             Q=Q,
             R_datasets=R_datasets,
@@ -361,7 +361,7 @@ class TestArrayStack:
         Tests that core GPAV produces isotonic output on a DAG.
         Structure: 0<1<2<4, 1<3
         """
-        from gpav import gpav_op as gpav_op_func, gpav_seg as gpav_seg_func
+        from utils.gpav import gpav_op as gpav_op_func, gpav_seg as gpav_seg_func
         
         # Build DAG: 0<1<2<4, 1<3
         G = nx.DiGraph()
@@ -423,7 +423,7 @@ class TestArrayStack:
             edges = {(0,3), (1,4), (2,5), (0,4), (1,5), (2,3), (0,5), (1,3), (2,4)}
             return (i, j) in edges
         
-        from trend_following import default_comparator
+        from utils.trend_following import default_comparator
         # First order for R_1
         u1 = OperadicGPAV(
             Q=Q,
@@ -455,7 +455,7 @@ class TestArrayStack:
         Direct GPAV test with non-zero node labels and weights.
         Tests gpav_seg infrastructure with arbitrary node labels.
         """
-        from gpav import gpav_seg as gpav_seg_func
+        from utils.gpav import gpav_seg as gpav_seg_func
         
         G = nx.DiGraph()
         G.add_nodes_from([1, 2, 3, 4, 5])
@@ -712,7 +712,7 @@ class TestArrayStack:
         - Alphabetic directory parsing
         - Zip archive explicit mapping (including length swapping)
         """
-        from dataset import CustomFiberDataset
+        from utils.dataset import CustomFiberDataset
         import zipfile
         import tempfile
 

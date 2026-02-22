@@ -21,8 +21,8 @@ from typing import List, Optional, Callable, Any, Tuple, Dict, Union, Sequence
 
 import numpy as np
 import networkx as nx
-from gpav import gpav_seg
-from trend_following import _build_dag_incrementally
+from .gpav import gpav_seg
+from .trend_following import _build_dag_incrementally
 ArrayLike = Union[np.ndarray, Sequence[float]]
 
 # ---------------------------------------------------------------------
