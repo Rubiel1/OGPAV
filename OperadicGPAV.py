@@ -549,7 +549,7 @@ def OperadicGPAV(
             
             for b_idx, b in enumerate(blocks):
                 val = u_blocks[off + b_idx]
-                for local_elem in b['elements']:
+                for local_elem in b['labels']:
                      try:
                         global_idx = mapping[local_elem]
                         u_final_global[global_idx] = val
@@ -557,7 +557,7 @@ def OperadicGPAV(
                         # Index mismatch indicates a bug in mapping logic
                         print(f"ERROR: IndexError in fiber {i}, block {b_idx}, local_elem {local_elem}")
                         print(f"  Mapping length: {len(mapping)}, local_elem: {local_elem}")
-                        print(f"  Block elements: {b['elements']}")
+                        print(f"  Block labels: {b['labels']}")
                         raise RuntimeError(
                             f"Index mismatch in fiber {i}: local element {local_elem} "
                             f"not found in mapping (length {len(mapping)}). This indicates a bug."

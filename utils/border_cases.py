@@ -108,7 +108,7 @@ def handle_q_no_edges(
                 
                 for b in blocks:
                     val = b['value']
-                    for local_elem in b['elements']:
+                    for local_elem in b['labels']:
                         u_final[idxs[local_elem]] = val
         else:
             effective_workers = max_workers or os.cpu_count() or 4
@@ -142,7 +142,7 @@ def handle_q_no_edges(
                         
                         for b in blocks:
                             val = b['value']
-                            for local_elem in b['elements']:
+                            for local_elem in b['labels']:
                                 u_final[idxs[local_elem]] = val
                         
                         # Submit next
