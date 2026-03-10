@@ -277,7 +277,10 @@ Run tests from the project root:
 ```bash
 python -m tests.gpav_test
 ```
-
+### Test can be run with 
+```
+python -m tests.gpav_test
+```
 
 ## Notes on correctness
 
