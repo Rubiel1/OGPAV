@@ -700,9 +700,82 @@ class TestArrayStack:
             assert np.max(u[:3]) <= np.min(u[3:]), \
                 f"Q constraint violated for flags ({use_first}, {use_blocks})"
         
-        # All results should be valid (though potentially different values)
-        # This is expected - different topological orders can give different GPAV results
         assert len(results) == 4, "Should have 4 results from 4 flag combinations"
+
+    def test_operadic_vs_sb_geometric_match(self):
+        """
+        Integration: OperadicGPAV and SB-GPAV should produce extremely similar results
+        on a geometric dataset where the global poset Q precisely matches the 
+        component-wise dominance order that SB-GPAV uses globally.
+        """
+        import tempfile
+        import math
+        
+        # 1. Generate a small but non-trivial geometric dataset
+        nQ = 20
+        avg_R = 15
+        
+        cache_dir = tempfile.mkdtemp(prefix="ogpav_test_match_")
+        data = generate_dataset_lazy(
+            nQ=nQ,
+            avg_R=avg_R,
+            seed=123,
+            cache_dir=cache_dir,
+            square_max = 100,
+        )
+        
+        R_datasets = data['R_points_list']
+        Q = data['Q_hasse']
+        
+        # Ensure Q matches dataset length
+        m = len(R_datasets.get_fiber_lengths())
+        if Q.number_of_nodes() != m:
+            mapping = {old: new for new, old in enumerate(sorted(Q.nodes()))}
+            Q = nx.relabel_nodes(Q, mapping)
+        
+        # Build global X array
+        lengths = R_datasets.get_fiber_lengths()
+        total_n = sum(lengths)
+        
+        parts = []
+        for i in range(m):
+            parts.append(np.asarray(R_datasets[i]))
+        X = np.concatenate(parts, axis=0)
+        
+        # Generate monotonic observations with moderate noise
+        from utils.geometric_sb_dataset import make_observations
+        y_noisy = make_observations(X, model="nonlinear", noise="normal", noise_scale=1.0, seed=42)
+        
+        # 2. Run OperadicGPAV
+        u_ogpav = OperadicGPAV(
+            Q=Q,
+            R_datasets=R_datasets,
+            Y=y_noisy,
+            assume_component_wise=True,
+            max_workers=1,
+            verbose=False
+        )
+        
+        # 3. Run SB-GPAV
+        # Topo order by sum of coordinates
+        L = list(np.argsort(np.sum(X, axis=1)))
+        
+        u_sb = sb_gpav(
+            X=X,
+            Y=y_noisy,
+            L=L,
+            n_segments=max(1, math.ceil(total_n / 50)),
+            assume_component_wise=True,
+            verbose=False
+        )
+        
+        # 4. Compare their results 
+        # Using MSE to ensure they are extremely close
+        mse = np.mean((u_ogpav - u_sb) ** 2)
+        
+        assert mse < 1e-5, f"OGPAV and SB-GPAV diverge significantly: MSE = {mse}"
+        
+        R_datasets.cleanup()
 
 
 
