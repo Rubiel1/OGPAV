@@ -231,7 +231,10 @@ u = OperadicGPAV(
     max_workers=2
 )
 ```
-
+### Test can be run with 
+```
+python -m tests.gpav_test
+```
 
 Notes on Correctness
 
