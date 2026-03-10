@@ -282,6 +282,40 @@ python -m tests.gpav_test
 python -m tests.gpav_test
 ```
 
+## Plot the artificial dataset
+```
+from utils.geometric_sb_dataset import (
+    generate_q_and_fibers,
+    plot_geometry,
+    attach_observations,
+    plot_3d,
+)
+
+data = generate_q_and_fibers(
+    nQ=5,
+    avg_R=10,
+    radius=1/3,
+    min_dist=0.02,
+    seed=0,
+    square_max= 2,
+    square_min = -2,
+)
+data = attach_observations(
+    data,
+    model="nonlinear",
+    noise="normal",
+    noise_scale=0.5,
+    seed=1,
+)
+plot_geometry(data, show_r_labels=True)
+
+X = data["X"]
+y = data["Y_array"]
+
+plot_3d(X, y, title="nonlinear + normal noise")
+```
+
+
 ## Notes on correctness
 
 All algorithms assume acyclic partial orders (posets).
