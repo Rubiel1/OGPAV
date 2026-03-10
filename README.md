@@ -3,84 +3,110 @@ OGPAV is an operadic version of GPAV for data with topological information.
 
 ![Tests](https://github.com/Rubiel1/OGPAV/actions/workflows/python-package.yml/badge.svg?branch=master)
 
-Consider GPAV — from
+Based on GPAV — from
 Burdakov, Grimvall, Sysoev (2006)
 “Data preordering in generalized PAV algorithm for monotonic regression”
 
-Segmentation-Based GPAV (SB-GPAV) — from
+and Segmentation-Based GPAV (SB-GPAV) — from
 Sysoev, Burdakov, Grimvall (2011)
 “A segmentation based algorithm for large scale partially ordered monotonic regression”
 
-Assuming the data has structure, we use the extra information to reduce the number of calls to the min-max algorithm.
+Assuming the data has extra structure, we use the extra information to reduce the complexity of the algorithm.
 The first stage of the algorithm is also ready to run in parallel.
 
+## Installation
 
-Installation 
-
-```
+```bash
 pip install -r requirements.txt
 ```
 
 Requirements:
 
-    numpy >= 2.0.2
+- numpy >= 2.0.2
+- networkx >= 2.8.8
+- hasse >= 0.2.0
 
-    networkx >= 2.8.8
+## Running examples on Linux and macOS
 
-    hasse >= 0.2.0
+All example scripts that use `max_workers > 1` should be run through a `main()` function protected by:
 
 
+```python
+from multiprocessing import freeze_support
+
+def main():
+    # build Q, R_datasets, Y, ...
+    # call OperadicGPAV(...)
+    pass
+
+if __name__ == "__main__":
+    freeze_support()  # optional on Linux/macOS, harmless to keep
+    main()
+```
+
+This is required on macOS because multiprocessing uses `spawn`.
+
+
+
+---
 
 ## Example Usage
 
 ### Basic Example with Geometric Dataset
 
 Generate structured geometric data:
+
 ```python
 import numpy as np
 import networkx as nx
+from multiprocessing import freeze_support
 from utils.geometric_sb_dataset import generate_dataset_lazy
 from OperadicGPAV import OperadicGPAV
 
-# Generate dataset with 3 fibers
-result = generate_dataset_lazy(
-    nQ=3,           # Number of Q nodes (outer poset)
-    avg_R=25,       # Average number of points per fiber
-    radius=1/3,     # Radius for point sampling
-    min_dist=0.02,  # Minimum distance between points
-    seed=42         # Random seed for reproducibility
-)
+def main():
+    # Generate dataset with 3 fibers
+    result = generate_dataset_lazy(
+        nQ=3,           # Number of Q nodes (outer poset)
+        avg_R=25,       # Average number of points per fiber
+        radius=1/3,     # Radius for point sampling
+        min_dist=0.02,  # Minimum distance between points
+        seed=42         # Random seed for reproducibility
+    )
 
-# Extract the fiber datasets (lazy sequence)
-R_datasets = result['R_points_list']
+    # Extract the fiber datasets (lazy sequence)
+    R_datasets = result['R_points_list']
 
-# Create outer poset Q: 0 -> 1 -> 2 (chain structure)
-Q = nx.DiGraph()
-Q.add_edges_from([(0, 1), (1, 2)])
+    # Create outer poset Q: 0 -> 1 -> 2 (chain structure)
+    Q = nx.DiGraph()
+    Q.add_edges_from([(0, 1), (1, 2)])
 
-# Get fiber lengths without loading the data into memory
-lengths = R_datasets.get_fiber_lengths()
-n0, n1, n2 = lengths[0], lengths[1], lengths[2]
+    # Get fiber lengths without loading the data into memory
+    lengths = R_datasets.get_fiber_lengths()
+    n0, n1, n2 = lengths[0], lengths[1], lengths[2]
 
-# Create response vector Y (concatenated across fibers)
-Y = np.concatenate([
-    np.random.RandomState(42).uniform(0, 3, n0),
-    np.random.RandomState(43).uniform(3, 6, n1),
-    np.random.RandomState(44).uniform(6, 9, n2)
-])
+    # Create response vector Y (concatenated across fibers)
+    Y = np.concatenate([
+        np.random.RandomState(42).uniform(0, 3, n0),
+        np.random.RandomState(43).uniform(3, 6, n1),
+        np.random.RandomState(44).uniform(6, 9, n2)
+    ])
 
-# Run OperadicGPAV
-u = OperadicGPAV(
-    Q=Q,
-    R_datasets=R_datasets,
-    Y=Y,
-    max_workers=2,
-    assume_component_wise=True, # True if X are vectors and the order is v <= w if every coordinate of v is less equal to every coordinate of w
-    verbose=True
-)
+    # Run OperadicGPAV
+    u = OperadicGPAV(
+        Q=Q,
+        R_datasets=R_datasets,
+        Y=Y,
+        max_workers=2,
+        assume_component_wise=True,  # coordinate-wise order on vectors
+        verbose=True
+    )
 
-print(f"Fitted values shape: {u.shape}")
-print(f"Output range: [{u.min():.2f}, {u.max():.2f}]")
+    print(f"Fitted values shape: {u.shape}")
+    print(f"Output range: [{u.min():.2f}, {u.max():.2f}]")
+
+if __name__ == "__main__":
+    freeze_support()
+    main()
 ```
 
 ### Parameters Explained
@@ -103,7 +129,7 @@ print(f"Output range: [{u.min():.2f}, {u.max():.2f}]")
   - If **single function**: `f(a, b) -> bool` used for all fibers
   - If **list of functions**: `[f_0, ..., f_{m-1}]`, one per fiber
   - If **None and `assume_component_wise=True`**: uses geometric coordinate-wise comparison `a <= b ⟺ a[k] <= b[k] ∀k`
-  - **[NEW RULE] If `None` and `assume_component_wise=False`**: the algorithm assumes the corresponding fiber $R_i$ is an entirely disjoint union of points (antichain) and skips all $O(N_i^3)$ local DAG constructions and $gpav\_seg$ steps, feeding trivially into Stage 2.
+  - If **None and `assume_component_wise=False`**: the algorithm assumes the corresponding fiber `R_i` is an entirely disjoint union of points (antichain) and skips all local DAG constructions and `gpav_seg` steps, feeding trivially into Stage 2.
 
 - **`indices_list`** *(List[List[int]], default=None)*:  
   Explicit mapping of Y indices to fibers. If None, assumes lexicographic concatenation.
@@ -126,7 +152,7 @@ print(f"Output range: [{u.min():.2f}, {u.max():.2f}]")
 **Returns:**
 
 - **`u`** *(np.ndarray)*: Fitted isotonic values of length N, aligned with input Y.  
-  Satisfies the partial order constraints induced by Q and each R_i.
+  Satisfies the partial order constraints induced by Q and each `R_i`.
 
 ---
 
@@ -144,7 +170,7 @@ Q.add_edge(0, 1)
 # Create fiber datasets
 R_datasets = [
     np.array([[1, 2], [2, 1], [3, 3]]),  # R_0: 3 points in 2D
-    np.array([[4, 4], [5, 5]])            # R_1: 2 points in 2D
+    np.array([[4, 4], [5, 5]])           # R_1: 2 points in 2D
 ]
 
 Y = np.array([1.0, 3.0, 2.0, 5.0, 4.0])
@@ -159,7 +185,7 @@ u = OperadicGPAV(
     R_datasets=R_datasets,
     Y=Y,
     f=custom_comparator,  # Apply to all fibers
-    max_workers=1,
+    max_workers=1,        # Sequential example: safe on Linux and macOS
     assume_component_wise=False,
     verbose=False
 )
@@ -170,6 +196,13 @@ print(f"Fitted values: {u}")
 ### Example: Per-Fiber Comparators
 
 ```python
+import numpy as np
+import networkx as nx
+from OperadicGPAV import OperadicGPAV
+
+Q = nx.DiGraph()
+Q.add_edge(0, 1)
+
 # Use different comparators for different fibers
 R_datasets = [
     np.array([[0], [1], [2]]),  # R_0: 1D points
@@ -189,7 +222,7 @@ u = OperadicGPAV(
     Y=Y,
     f=[None, r1_comparator],  # None uses default for R_0
     max_workers=1,
-    assume_component_wise=False, #you cannot have this as True if you have custom comparators
+    assume_component_wise=False,  # must be False if custom comparators are provided
 )
 
 print(f"Output: {u}")
@@ -197,47 +230,61 @@ print(f"Output: {u}")
 
 ### Example: Loading Fibers from a Directory or `.zip`
 
-The `dataset.py` library provides `CustomFiberDataset`, allowing you to load fiber subsets lazily from `.npy`, `.csv`, or `.txt` files directly off disk or extracted from a Zip archive without consuming full memory.
+The `dataset.py` library provides `CustomFiberDataset`, allowing you to load fiber subsets lazily from `.npy`, `.csv`, or `.txt` files directly off disk or extracted from a zip archive without consuming full memory.
 
 ```python
 import numpy as np
 import networkx as nx
+from multiprocessing import freeze_support
 from OperadicGPAV import OperadicGPAV
 from utils.dataset import CustomFiberDataset
 
-# Load fiber data locally without storing it completely in memory
-# - Automatically enables fast memory-mapped `get_fiber_lengths()` for `.npy`
-dataset = CustomFiberDataset(
-    source_path="my_large_fibers.zip", 
-    
-    # Map Q-nodes to raw data files directly:
-    node_to_file={
-        0: 'R_0.npy',
-        1: 'R_1.csv',
-        2: 'R_2.txt'
-    }
-    # NOTE: If `node_to_file` is None, files are sorted alphabetically 
-    # and node 0 gets mapped to the first alphabetical file, with a Warning.
-)
+def main():
+    # Load fiber data locally without storing it completely in memory
+    # Automatically enables fast memory-mapped `get_fiber_lengths()` for `.npy`
+    dataset = CustomFiberDataset(
+        source_path="my_large_fibers.zip",
+        node_to_file={
+            0: "R_0.npy",
+            1: "R_1.csv",
+            2: "R_2.txt",
+        }
+        # If `node_to_file` is None, files are sorted alphabetically
+        # and node 0 is mapped to the first alphabetical file, with a warning.
+    )
 
-# Q-nodes chain: 0 -> 1 -> 2
-Q = nx.DiGraph([(0, 1), (1, 2)])
-Y = np.random.uniform(0, 5, sum(dataset.get_fiber_lengths()))
+    # Q-nodes chain: 0 -> 1 -> 2
+    Q = nx.DiGraph([(0, 1), (1, 2)])
+    Y = np.random.uniform(0, 5, sum(dataset.get_fiber_lengths()))
 
-u = OperadicGPAV(
-    Q=Q,
-    R_datasets=dataset,
-    Y=Y,
-    max_workers=2
-)
+    u = OperadicGPAV(
+        Q=Q,
+        R_datasets=dataset,
+        Y=Y,
+        max_workers=2
+    )
+    print(u)
+
+if __name__ == "__main__":
+    freeze_support()
+    main()
+```
+
+## Running tests
+
+Run tests from the project root:
+
+```bash
+python -m tests.gpav_test
 ```
 
 
-Notes on Correctness
+## Notes on correctness
 
 All algorithms assume acyclic partial orders (posets).
 
-Please, Index the nodes of $R_i$ with indexes from $0$ to $n-1$.
+Please index the nodes of `R_i` with indices from `0` to `n_i - 1`.
 
+## Authors
 
-Authors: Eric Dolores Cuenca, Susana Lopez Moreno, Jonathan Toledo Toledo, Anh Nguyen, Sangil Kim
+Eric Dolores Cuenca, Susana Lopez Moreno, Jonathan Toledo Toledo, Anh Nguyen, Sangil Kim
