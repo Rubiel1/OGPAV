@@ -196,7 +196,19 @@ def ensure_q_nodes_match_num_fibers(Q: nx.DiGraph, m: int) -> nx.DiGraph:
     mapping = {old: new for new, old in enumerate(sorted(q_nodes))}
     return nx.relabel_nodes(Q, mapping, copy=True)
 
+def topological_order_from_lazy_fibers(R_datasets):
+    sums = []
+    index = 0
 
+    for i in range(len(R_datasets)):
+        Ri = np.asarray(R_datasets[i], dtype=float)
+
+        for row in Ri:
+            sums.append((np.sum(row), index))
+            index += 1
+
+    sums.sort(key=lambda x: x[0])
+    return [idx for _, idx in sums]
 # ============================================================
 # One trial
 # ============================================================
@@ -315,14 +327,18 @@ def run_one_trial(
             print("\nBuilding full X for sb_gpav (without building global poset)...")
 
         t0 = time.perf_counter()
+        L = topological_order_from_lazy_fibers(R_datasets)
+
+        # only build X AFTER the order is known
         X, lengths_check, indices_list = build_full_X_from_lazy(R_datasets)
+        #X, lengths_check, indices_list = build_full_X_from_lazy(R_datasets)
         t_build_X = time.perf_counter() - t0
 
         if lengths != lengths_check:
             raise RuntimeError("Fiber lengths changed unexpectedly while building X")
 
         # One valid topological order under coordinate-wise <=
-        L = topological_order_from_coordinates(X)
+        #L = topological_order_from_coordinates(X)
 
         # Choose number of segments if not supplied
         # Paper suggests segment size around 2000; translate that into n_segments.
@@ -448,39 +464,30 @@ def run_repeated_experiment(
         tasks.append((data_seed, noise_seed))
 
     results = []
+    for data_seed, noise_seed in tasks:
+        res = run_one_trial(
+            nQ=nQ,
+            avg_R=avg_R,
+            radius=radius,
+            min_dist=min_dist,
+            square_min=square_min,
+            square_max=square_max,
+            min_center_dist=min_center_dist,
+            fiber_count_dist=fiber_count_dist,
+            model=model,
+            noise=noise,
+            noise_scale=noise_scale,
+            data_seed=data_seed,
+            noise_seed=noise_seed,
+            n_segments=n_segments,
+            max_workers=max_workers,   # pass through
+            use_trend_following_first=use_trend_following_first,
+            use_trend_following_blocks=use_trend_following_blocks,
+            verbose=False,
+        )
+        results.append(res)
 
-    with ProcessPoolExecutor(max_workers=min(n_trials, max_workers)) as executor:
-
-        futures = [
-            executor.submit(
-                run_one_trial,
-                nQ=nQ,
-                avg_R=avg_R,
-                radius=radius,
-                min_dist=min_dist,
-                square_min=square_min,
-                square_max=square_max,
-                min_center_dist=min_center_dist,
-                fiber_count_dist=fiber_count_dist,
-                model=model,
-                noise=noise,
-                noise_scale=noise_scale,
-                data_seed=data_seed,
-                noise_seed=noise_seed,
-                n_segments=n_segments,
-                max_workers=1,  # avoid nested parallelism
-                use_trend_following_first=use_trend_following_first,
-                use_trend_following_blocks=use_trend_following_blocks,
-                verbose=False,
-            )
-            for data_seed, noise_seed in tasks
-        ]
-
-        for f in futures:
-            results.append(f.result())
-
-
-    return all_results
+    return results
 
 
 def summarize_results(results: List[Dict[str, object]]) -> Dict[str, object]:
@@ -591,18 +598,10 @@ if __name__ == "__main__":
     # Start around 6000 total samples and then grow fast toward big data.
     # Since R must be a square, 80^2 = 6400 is the closest clean start.
     q_values = [
-        80,    # 6,400
-        100,   # 10,000
-        120,   # 14,400
-        150,   # 22,500
-        200,   # 40,000
-        250,   # 62,500
-        300,   # 90,000
-        400,   # 160,000
-        500,   # 250,000
-        600,   # 360,000
-        800,   # 640,000
+        100, #10, 000
         1000,  # 1,000,000
+        10000,  # 100,000,000
+        100000,  # 10,000,000,000
     ]
     R_values = [q * q for q in q_values]
 
@@ -738,7 +737,9 @@ if __name__ == "__main__":
         nQ = q
         avg_R = q
         n_segments = q  # because we want segment size ~ sqrt(R)
-
+        scale = math.sqrt(q / 80)
+        radius = (1/3) * scale
+        square_max = 1.25 * q
         print("\n" + "=" * 80)
         print(f"Running target R={R}")
         print(f"sqrt(R)={q}, nQ={nQ}, avg_R={avg_R}, n_segments={n_segments}")
@@ -749,17 +750,17 @@ if __name__ == "__main__":
                 n_trials=3,
                 nQ=nQ,
                 avg_R=avg_R,
-                radius=1/3,
+                radius=radius,
                 min_dist=0.02,
                 square_min=0,
-                square_max=100,
+                square_max=square_max,
                 fiber_count_dist="poisson",
                 model="nonlinear",
                 noise="normal",
                 noise_scale=1.0,
                 base_seed=2026 + q,   # vary seed with size
                 n_segments=n_segments,
-                max_workers=3,
+                max_workers=32,
                 use_trend_following_first=False,
                 use_trend_following_blocks=False,
                 verbose=False,
