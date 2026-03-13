@@ -49,26 +49,68 @@ ArrayLike = Union[np.ndarray, Sequence[float]]
 def _rng(seed: Optional[int]) -> np.random.Generator:
     return np.random.default_rng(seed)
 
-
 def sample_integer_centers(
     nQ: int,
     *,
     square_min: int = 0,
     square_max: int = 100,
+    min_center_dist: float = 0.0,
     seed: Optional[int] = None,
 ) -> np.ndarray:
-    """Sample nQ distinct integer points in [square_min, square_max]^2."""
+    """
+    Sample nQ distinct integer points in [square_min, square_max]^2.
+
+    If min_center_dist > 0, enforce pairwise Euclidean separation between centers.
+    """
     if nQ <= 0:
         raise ValueError("nQ must be positive.")
+
     side = square_max - square_min + 1
-    if nQ > side * side:
+    total_pts = side * side
+    if nQ > total_pts:
         raise ValueError("nQ exceeds number of integer lattice points in the square.")
+
     rg = _rng(seed)
-    idx = rg.choice(side * side, size=nQ, replace=False)
-    xs = idx % side
-    ys = idx // side
-    q = np.stack([xs + square_min, ys + square_min], axis=1).astype(int)
-    return q
+
+    # Fast path: no separation constraint beyond uniqueness
+    if min_center_dist <= 0:
+        idx = rg.choice(total_pts, size=nQ, replace=False)
+        xs = idx % side
+        ys = idx // side
+        q = np.stack([xs + square_min, ys + square_min], axis=1).astype(int)
+        return q
+
+    # Separation-constrained path: random greedy selection from the lattice
+    grid_x, grid_y = np.meshgrid(
+        np.arange(square_min, square_max + 1, dtype=int),
+        np.arange(square_min, square_max + 1, dtype=int),
+        indexing="xy",
+    )
+    candidates = np.stack([grid_x.ravel(), grid_y.ravel()], axis=1)
+    order = rg.permutation(candidates.shape[0])
+
+    selected = []
+    min_center_dist_sq = float(min_center_dist) ** 2
+
+    for idx in order:
+        c = candidates[idx]
+        ok = True
+        for s in selected:
+            dx = float(c[0] - s[0])
+            dy = float(c[1] - s[1])
+            if dx * dx + dy * dy < min_center_dist_sq:
+                ok = False
+                break
+        if ok:
+            selected.append(c)
+            if len(selected) == nQ:
+                return np.asarray(selected, dtype=int)
+
+    raise ValueError(
+        f"Could not place {nQ} centers in [{square_min},{square_max}]^2 "
+        f"with min_center_dist={min_center_dist:.4f}. "
+        f"Increase square_max or reduce min_center_dist."
+    )
 
 
 def sample_points_in_disk(
@@ -288,7 +330,6 @@ class InMemoryLazyDataset(Sequence):
 # ---------------------------------------------------------------------
 # Generators
 # ---------------------------------------------------------------------
-
 def generate_q_and_fibers(
     *,
     nQ: int,
@@ -297,6 +338,7 @@ def generate_q_and_fibers(
     min_dist: float = 0.02,
     square_min: int = 0,
     square_max: int = 100,
+    min_center_dist: float = 0.0,
     seed: Optional[int] = None,
     fiber_count_dist: str = "poisson",
     build_global_hasse: bool = True,
@@ -306,11 +348,12 @@ def generate_q_and_fibers(
     """
     return _generate_core(
         nQ=nQ, avg_R=avg_R, radius=radius, min_dist=min_dist,
-        square_min=square_min, square_max=square_max, seed=seed,
+        square_min=square_min, square_max=square_max,
+        min_center_dist=min_center_dist,
+        seed=seed,
         fiber_count_dist=fiber_count_dist, build_global_hasse=build_global_hasse,
         use_cache=False
     )
-
 def generate_dataset_lazy(
     *,
     nQ: int,
@@ -319,6 +362,7 @@ def generate_dataset_lazy(
     min_dist: float = 0.02,
     square_min: int = 0,
     square_max: int = 100,
+    min_center_dist: float = 0.0,
     seed: Optional[int] = None,
     fiber_count_dist: str = "poisson",
     cache_dir: Optional[str] = None,
@@ -332,22 +376,29 @@ def generate_dataset_lazy(
         cache_dir = tempfile.mkdtemp(prefix="ogpav_cache_")
     else:
         os.makedirs(cache_dir, exist_ok=True)
-        
+
     return _generate_core(
         nQ=nQ, avg_R=avg_R, radius=radius, min_dist=min_dist,
-        square_min=square_min, square_max=square_max, seed=seed,
+        square_min=square_min, square_max=square_max,
+        min_center_dist=min_center_dist,
+        seed=seed,
         fiber_count_dist=fiber_count_dist, build_global_hasse=False,
         use_cache=True, cache_dir=cache_dir
     )
 
 def _generate_core(
-    nQ, avg_R, radius, min_dist, square_min, square_max, seed, 
-    fiber_count_dist, build_global_hasse, 
+    nQ, avg_R, radius, min_dist, square_min, square_max, min_center_dist, seed,
+    fiber_count_dist, build_global_hasse,
     use_cache=False, cache_dir=None
 ):
     rg = _rng(seed)
-    q = sample_integer_centers(nQ, square_min=square_min, square_max=square_max, seed=seed)
-
+    q = sample_integer_centers(
+        nQ,
+        square_min=square_min,
+        square_max=square_max,
+        min_center_dist=min_center_dist,
+        seed=seed,
+    )
     R_list = []
     fiber_of = []
     
