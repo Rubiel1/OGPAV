@@ -43,7 +43,8 @@ import networkx as nx
 
 from OperadicGPAV import OperadicGPAV
 from utils.geometric_sb_dataset import (
-    generate_dataset_lazy,
+    generate_standard,
+    make_dataset_params,
     MODEL_FUNCS,
 )
 from utils.sb_gpav import sb_gpav
@@ -215,19 +216,13 @@ def topological_order_from_lazy_fibers(R_datasets):
 
 def run_one_trial(
     *,
-    nQ: int = 50,
-    avg_R: int = 200,
-    radius: float = 1/3,
-    min_dist: float = 0.02,
-    square_min: int = 0,
-    square_max: int = 100,
+    q: int = 50,
     fiber_count_dist: str = "poisson",
     model: str = "nonlinear",
     noise: str = "normal",
     noise_scale: float = 1.0,
     data_seed: int = 0,
     noise_seed: int = 1,
-    min_center_dist: float = 0.0,
     n_segments: Optional[int] = None,
     max_workers: Optional[int] = None,
     use_trend_following_first: bool = True,
@@ -237,25 +232,22 @@ def run_one_trial(
     """
     Run one comparison trial.
     """
-    temp_cache_dir = None
+    params = make_dataset_params(q)
+    nQ    = params["nQ"]
+    avg_R = params["avg_R"]
     try:
         # --------------------------------------------------------
         # 1. Generate lazy dataset
         # --------------------------------------------------------
         if verbose:
             print("=" * 80)
-            print(f"Generating lazy dataset: nQ={nQ}, avg_R={avg_R}, seed={data_seed}")
+            print(f"Generating lazy dataset: q={q}, nQ={nQ}, avg_R={avg_R}, seed={data_seed}")
 
-        data = generate_dataset_lazy(
-            nQ=nQ,
-            avg_R=avg_R,
-            radius=radius,
-            min_dist=min_dist,
-            square_min=square_min,
-            square_max=square_max,
-            min_center_dist=min_center_dist,
+        data = generate_standard(
+            q,
             seed=data_seed,
             fiber_count_dist=fiber_count_dist,
+            lazy=True,
         )
 
 
@@ -373,12 +365,13 @@ def run_one_trial(
 
         result = {
             "config": {
+                "q": q,
                 "nQ": nQ,
                 "avg_R": avg_R,
-                "radius": radius,
-                "min_dist": min_dist,
-                "square_min": square_min,
-                "square_max": square_max,
+                "radius": params["radius"],
+                "fiber_grid_step": params["fiber_grid_step"],
+                "center_grid_step": params["center_grid_step"],
+                "square_max": params["square_max"],
                 "fiber_count_dist": fiber_count_dist,
                 "model": model,
                 "noise": noise,
@@ -433,12 +426,7 @@ def run_one_trial(
 def run_repeated_experiment(
     *,
     n_trials: int = 5,
-    nQ: int = 50,
-    avg_R: int = 200,
-    radius: float = 1/3,
-    min_dist: float = 0.02,
-    square_min: int = 0,
-    square_max: int = 100,
+    q: int = 50,
     fiber_count_dist: str = "poisson",
     model: str = "nonlinear",
     noise: str = "normal",
@@ -449,30 +437,19 @@ def run_repeated_experiment(
     use_trend_following_first: bool = True,
     use_trend_following_blocks: bool = True,
     verbose: bool = False,
-    min_center_dist: float = 0.0,
 ) -> List[Dict[str, object]]:
     """
     Run multiple independent trials.
     """
-
-    tasks = []
-    for trial in range(n_trials):
-
-        data_seed = base_seed + trial * 2
-        noise_seed = base_seed + trial * 2 + 1
-
-        tasks.append((data_seed, noise_seed))
+    tasks = [
+        (base_seed + trial * 2, base_seed + trial * 2 + 1)
+        for trial in range(n_trials)
+    ]
 
     results = []
     for data_seed, noise_seed in tasks:
         res = run_one_trial(
-            nQ=nQ,
-            avg_R=avg_R,
-            radius=radius,
-            min_dist=min_dist,
-            square_min=square_min,
-            square_max=square_max,
-            min_center_dist=min_center_dist,
+            q=q,
             fiber_count_dist=fiber_count_dist,
             model=model,
             noise=noise,
@@ -480,7 +457,7 @@ def run_repeated_experiment(
             data_seed=data_seed,
             noise_seed=noise_seed,
             n_segments=n_segments,
-            max_workers=max_workers,   # pass through
+            max_workers=max_workers,
             use_trend_following_first=use_trend_following_first,
             use_trend_following_blocks=use_trend_following_blocks,
             verbose=False,
@@ -598,6 +575,7 @@ if __name__ == "__main__":
     # Start around 6000 total samples and then grow fast toward big data.
     # Since R must be a square, 80^2 = 6400 is the closest clean start.
     q_values = [
+        10, #100
         100, #10, 000
         1000,  # 1,000,000
         10000,  # 100,000,000
@@ -734,26 +712,21 @@ if __name__ == "__main__":
             print(f"Skipping already completed R={R}")
             continue
 
-        nQ = q
-        avg_R = q
-        n_segments = q  # because we want segment size ~ sqrt(R)
-        scale = math.sqrt(q / 80)
-        radius = (1/3) * scale
-        square_max = 4 * q
+        n_segments = q  # segment size ~ sqrt(R)
+        _p = make_dataset_params(q)
         print("\n" + "=" * 80)
         print(f"Running target R={R}")
-        print(f"sqrt(R)={q}, nQ={nQ}, avg_R={avg_R}, n_segments={n_segments}")
+        print(
+            f"sqrt(R)={q}, nQ={_p['nQ']}, avg_R={_p['avg_R']}, "
+            f"radius={_p['radius']:.3f}, center_step={_p['center_grid_step']}, "
+            f"square_max={_p['square_max']}, n_segments={n_segments}"
+        )
 
         try:
             # 3 repetitions so we can build mean/std tubes
             results = run_repeated_experiment(
                 n_trials=3,
-                nQ=nQ,
-                avg_R=avg_R,
-                radius=radius,
-                min_dist=0.02,
-                square_min=0,
-                square_max=square_max,
+                q=q,
                 fiber_count_dist="poisson",
                 model="nonlinear",
                 noise="normal",
@@ -775,8 +748,8 @@ if __name__ == "__main__":
             row = {
                 "R_target": int(R),
                 "sqrt_R": int(q),
-                "nQ_input": int(nQ),
-                "avg_R_input": int(avg_R),
+                "nQ_input": int(_p["nQ"]),
+                "avg_R_input": int(_p["avg_R"]),
                 "n_segments": int(n_segments),
 
                 "N_actual_mean": float(np.mean(realized_N)),
@@ -846,8 +819,8 @@ if __name__ == "__main__":
                 {
                     "R_target": int(R),
                     "sqrt_R": int(q),
-                    "nQ_input": int(nQ),
-                    "avg_R_input": int(avg_R),
+                    "nQ_input": int(_p["nQ"]),
+                    "avg_R_input": int(_p["avg_R"]),
                     "n_segments": int(n_segments),
                     "error": str(e),
                     "traceback": traceback.format_exc(),
