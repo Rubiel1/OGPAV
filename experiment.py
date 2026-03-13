@@ -739,7 +739,7 @@ if __name__ == "__main__":
         n_segments = q  # because we want segment size ~ sqrt(R)
         scale = math.sqrt(q / 80)
         radius = (1/3) * scale
-        square_max = 1.25 * q
+        square_max = 4 * q
         print("\n" + "=" * 80)
         print(f"Running target R={R}")
         print(f"sqrt(R)={q}, nQ={nQ}, avg_R={avg_R}, n_segments={n_segments}")
