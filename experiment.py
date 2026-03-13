@@ -30,7 +30,7 @@ python experiment_compare_ogpav_vs_sb.py
 """
 
 from __future__ import annotations
-
+from concurrent.futures import ProcessPoolExecutor
 import os
 import time
 import math
@@ -438,38 +438,47 @@ def run_repeated_experiment(
     """
     Run multiple independent trials.
     """
-    all_results: List[Dict[str, object]] = []
 
+    tasks = []
     for trial in range(n_trials):
-        data_seed = base_seed + 2 * trial
-        noise_seed = base_seed + 2 * trial + 1
 
-        if verbose:
-            print("\n" + "#" * 80)
-            print(f"TRIAL {trial + 1}/{n_trials}")
-            print("#" * 80)
+        data_seed = base_seed + trial * 2
+        noise_seed = base_seed + trial * 2 + 1
 
-        res = run_one_trial(
-            nQ=nQ,
-            avg_R=avg_R,
-            radius=radius,
-            min_dist=min_dist,
-            square_min=square_min,
-            square_max=square_max,
-            fiber_count_dist=fiber_count_dist,
-            model=model,
-            noise=noise,
-            noise_scale=noise_scale,
-            data_seed=data_seed,
-            noise_seed=noise_seed,
-            n_segments=n_segments,
-            max_workers=max_workers,
-            use_trend_following_first=use_trend_following_first,
-            use_trend_following_blocks=use_trend_following_blocks,
-            verbose=False,
-            min_center_dist=min_center_dist,
-        )
-        all_results.append(res)
+        tasks.append((data_seed, noise_seed))
+
+    results = []
+
+    with ProcessPoolExecutor(max_workers=min(n_trials, max_workers)) as executor:
+
+        futures = [
+            executor.submit(
+                run_one_trial,
+                nQ=nQ,
+                avg_R=avg_R,
+                radius=radius,
+                min_dist=min_dist,
+                square_min=square_min,
+                square_max=square_max,
+                min_center_dist=min_center_dist,
+                fiber_count_dist=fiber_count_dist,
+                model=model,
+                noise=noise,
+                noise_scale=noise_scale,
+                data_seed=data_seed,
+                noise_seed=noise_seed,
+                n_segments=n_segments,
+                max_workers=1,  # avoid nested parallelism
+                use_trend_following_first=use_trend_following_first,
+                use_trend_following_blocks=use_trend_following_blocks,
+                verbose=False,
+            )
+            for data_seed, noise_seed in tasks
+        ]
+
+        for f in futures:
+            results.append(f.result())
+
 
     return all_results
 
@@ -750,7 +759,7 @@ if __name__ == "__main__":
                 noise_scale=1.0,
                 base_seed=2026 + q,   # vary seed with size
                 n_segments=n_segments,
-                max_workers=2,
+                max_workers=3,
                 use_trend_following_first=False,
                 use_trend_following_blocks=False,
                 verbose=False,
