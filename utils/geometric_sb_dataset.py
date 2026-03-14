@@ -261,10 +261,22 @@ def f_linear_weak(x: np.ndarray) -> np.ndarray:
 def f_linear_strong(x: np.ndarray) -> np.ndarray:
     return x[:, 0] + x[:, 1]
 
+# Paper's three slope combinations (Sysoev et al., Table 1/2)
+# α = (0.2, 0.2) = "low", (0.2, 2.0) = "mix", (2.0, 2.0) = "high"
+def _make_linear(a1: float, a2: float) -> Callable[..., np.ndarray]:
+    def _f(x: np.ndarray) -> np.ndarray:
+        return a1 * x[:, 0] + a2 * x[:, 1]
+    _f.__name__ = f"f_linear_{a1}_{a2}"
+    return _f
+
 MODEL_FUNCS: Dict[str, Callable[..., np.ndarray]] = {
-    "nonlinear": f_nonlinear,
-    "linear_weak": f_linear_weak,
+    "nonlinear":     f_nonlinear,
+    "linear_weak":   f_linear_weak,
     "linear_strong": f_linear_strong,
+    # Paper slope combinations (coordinates fed in raw, noise_scale=q keeps SNR constant)
+    "linear_low":    _make_linear(0.2, 0.2),   # low slope
+    "linear_mix":    _make_linear(0.2, 2.0),   # asymmetric slope
+    "linear_high":   _make_linear(2.0, 2.0),   # high slope
 }
 
 def make_observations(
@@ -696,6 +708,10 @@ def make_dataset_params(q: int, coverage: float = 3.0) -> dict:
     * ``center_grid_step = ceil(2 * radius)``  — guarantees non-overlapping
       disks by construction, no pruning required.
     * ``square_max = 4 * q``  — provides ~16× headroom for Q-center placement.
+    * ``noise_scale = float(q)``  — recommended experiment parameter: scales with
+      coordinate range so SNR stays constant as q grows (signal ∝ q for linear
+      models, noise ∝ q). **Not** returned in the dict; compute as ``float(q)``
+      in your experiment script.
 
     Parameters
     ----------
@@ -708,16 +724,13 @@ def make_dataset_params(q: int, coverage: float = 3.0) -> dict:
     Returns
     -------
     dict with keys: nQ, avg_R, radius, fiber_grid_step, center_grid_step,
-                    square_min, square_max
+                    square_min, square_max, noise_scale
     """
     if q <= 0:
         raise ValueError("q must be a positive integer.")
     radius           = math.sqrt(q) / 2
-    # fiber_grid_step = radius * sqrt(π / (coverage * q))
-    #                 = sqrt(q)/2 * sqrt(π / (coverage * q))
-    #                 = sqrt(π / coverage) / 2  — independent of q!
     fiber_grid_step  = math.sqrt(math.pi / coverage) / 2
-    center_grid_step = math.ceil(3 * radius)
+    center_grid_step = math.ceil(2 * radius)
     return dict(
         nQ               = q,
         avg_R            = q,
@@ -726,6 +739,9 @@ def make_dataset_params(q: int, coverage: float = 3.0) -> dict:
         center_grid_step = center_grid_step,
         square_min       = 0,
         square_max       = 4 * q,
+        # --- observation parameter (y = f(x) + ε) ---
+        # Not passed to geometry functions; use in your experiment script.
+        noise_scale      = float(q),
     )
 
 
@@ -767,15 +783,18 @@ def generate_standard(
     dict — same structure as :func:`generate_q_and_fibers`.
     """
     params = make_dataset_params(q, coverage=coverage)
+    # Strip observation-only keys — geometry functions don't accept them.
+    geom = {k: v for k, v in params.items()
+            if k not in ("noise_scale",)}
     if lazy:
         return generate_dataset_lazy(
-            **params,
+            **geom,
             seed=seed,
             fiber_count_dist=fiber_count_dist,
             cache_dir=cache_dir,
         )
     return generate_q_and_fibers(
-        **params,
+        **geom,
         seed=seed,
         fiber_count_dist=fiber_count_dist,
         build_global_hasse=build_global_hasse,

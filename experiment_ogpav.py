@@ -4,18 +4,13 @@ experiment_ogpav.py
 
 OperadicGPAV-only scaling study.
 
-Use this after experiment.py has established the comparison at moderate sizes
-and confirmed that sb_gpav cannot scale further.  This script runs OperadicGPAV
-alone — no sb_gpav, no full-X materialisation — so it can handle much larger q.
+Three slope configurations from Sysoev et al. (Table 1/2) are tested:
+  low  (α=0.2, 0.2),  mix  (α=0.2, 2.0),  high (α=2.0, 2.0)
 
-What it does
-------------
-1. For each q in q_values, derive geometry with make_dataset_params(q).
-2. Generate a lazy dataset (fibers on disk, never build global X).
-3. Build y_true fiber-by-fiber; add noise.
-4. Run OperadicGPAV and record timing + RMSE.
-5. Save progress to CSV/JSON after each size (resume-safe).
-6. Plot timing and RMSE vs R on completion.
+noise_scale = q (from make_dataset_params) keeps SNR constant as q grows,
+since both the signal (coordinates in [0, 4q]) and the noise scale with q.
+
+Results are written to per-slope CSV/JSON files for easy resume.
 """
 
 from __future__ import annotations
@@ -27,10 +22,13 @@ import math
 import os
 import time
 import traceback
+import tracemalloc
 from typing import Dict, List, Optional
 
 import numpy as np
 import networkx as nx
+import psutil as _psutil
+_proc = _psutil.Process(os.getpid())
 
 from OperadicGPAV import OperadicGPAV
 from utils.geometric_sb_dataset import (
@@ -45,7 +43,7 @@ from utils.geometric_sb_dataset import (
 
 def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
     err = np.asarray(y_pred, dtype=float) - np.asarray(y_true, dtype=float)
-    mse  = float(np.mean(err ** 2))
+    mse = float(np.mean(err ** 2))
     return {
         "mse":     mse,
         "rmse":    float(np.sqrt(mse)),
@@ -66,7 +64,7 @@ def make_noise(n: int, *, noise: str = "normal", noise_scale: float = 1.0,
     raise ValueError(f"Unknown noise '{noise}'")
 
 
-def make_y_true_from_fibers(R_datasets, *, model: str = "nonlinear") -> np.ndarray:
+def make_y_true_from_fibers(R_datasets, *, model: str = "linear_high") -> np.ndarray:
     f = MODEL_FUNCS[model]
     return np.concatenate([f(np.asarray(R_datasets[i], dtype=float))
                            for i in range(len(R_datasets))], axis=0)
@@ -90,7 +88,7 @@ def run_one_trial(
     *,
     q: int,
     fiber_count_dist: str = "poisson",
-    model: str = "nonlinear",
+    model: str = "linear_high",
     noise: str = "normal",
     noise_scale: float = 1.0,
     data_seed: int = 0,
@@ -106,7 +104,8 @@ def run_one_trial(
 
     try:
         if verbose:
-            print(f"  Generating q={q} (nQ={nQ}, avg_R={avg_R}, seed={data_seed}) ...")
+            print(f"    Generating q={q} (nQ={nQ}, avg_R={avg_R}, "
+                  f"noise_scale={noise_scale:.0f}, seed={data_seed}) ...")
 
         data = generate_standard(q, seed=data_seed,
                                  fiber_count_dist=fiber_count_dist, lazy=True)
@@ -114,8 +113,8 @@ def run_one_trial(
         R_datasets = data["R_points_list"]
         Q = ensure_q_nodes_match_num_fibers(data["Q_hasse"], len(R_datasets))
 
-        lengths  = R_datasets.get_fiber_lengths()
-        total_n  = int(sum(lengths))
+        lengths = R_datasets.get_fiber_lengths()
+        total_n = int(sum(lengths))
 
         y_true  = make_y_true_from_fibers(R_datasets, model=model)
         y_noisy = y_true + make_noise(total_n, noise=noise,
@@ -124,8 +123,10 @@ def run_one_trial(
         baseline_metrics = compute_metrics(y_true, y_noisy)
 
         if verbose:
-            print(f"  Running OperadicGPAV (N={total_n}) ...")
+            print(f"    Running OperadicGPAV (N={total_n}) ...")
 
+        tracemalloc.start()
+        rss_before = _proc.memory_info().rss
         t0 = time.perf_counter()
         u_ogpav = OperadicGPAV(
             Q=Q,
@@ -142,6 +143,15 @@ def run_one_trial(
             temp_dir=None,
         )
         t_ogpav = time.perf_counter() - t0
+        _, peak_bytes = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        rss_after   = _proc.memory_info().rss
+        mem_mb      = peak_bytes / 1024 / 1024
+        rss_delta_mb = (rss_after - rss_before) / 1024 / 1024
+
+        # Objective function: what GPAV actually minimises
+        obj_ogpav = float(np.sum((np.asarray(u_ogpav, dtype=float)
+                                  - np.asarray(y_noisy, dtype=float)) ** 2))
 
         return {
             "config": {
@@ -167,6 +177,9 @@ def run_one_trial(
                 "Q_num_edges": int(Q.number_of_edges()),
             },
             "timings_sec": {"operadic_gpav": t_ogpav},
+            "memory_mb":   {"operadic_gpav": mem_mb},
+            "rss_delta_mb": {"operadic_gpav": rss_delta_mb},
+            "objective":   {"operadic_gpav": obj_ogpav},
             "baseline_noisy_vs_truth": baseline_metrics,
             "operadic_vs_truth": compute_metrics(y_true, u_ogpav),
         }
@@ -189,7 +202,7 @@ def run_repeated_experiment(
     n_trials: int = 3,
     q: int,
     fiber_count_dist: str = "poisson",
-    model: str = "nonlinear",
+    model: str = "linear_high",
     noise: str = "normal",
     noise_scale: float = 1.0,
     base_seed: int = 123,
@@ -228,8 +241,9 @@ def summarize_results(results: List[Dict[str, object]]) -> Dict[str, object]:
             a = arr(section, metric)
             summary[section][metric] = {"mean": float(a.mean()), "std": float(a.std(ddof=0))}
 
-    a = arr("timings_sec", "operadic_gpav")
-    summary["timings_sec"] = {"operadic_gpav": {"mean": float(a.mean()), "std": float(a.std(ddof=0))}}
+    for top_key in ("timings_sec", "memory_mb", "rss_delta_mb", "objective"):
+        a = arr(top_key, "operadic_gpav")
+        summary[top_key] = {"operadic_gpav": {"mean": float(a.mean()), "std": float(a.std(ddof=0))}}
 
     return summary
 
@@ -239,171 +253,254 @@ def summarize_results(results: List[Dict[str, object]]) -> Dict[str, object]:
 # ============================================================
 
 if __name__ == "__main__":
+    import argparse
     import matplotlib.pyplot as plt
+
+    parser = argparse.ArgumentParser(description="Run OperadicGPAV scaling experiment.")
+    parser.add_argument("--model", type=str, default=None,
+                        help="Which slope config to run (linear_low, linear_mix, linear_high). "
+                             "If omitted, runs all three.")
+    args = parser.parse_args()
 
     # ------------------------------------------------------------------
     # Configuration
-    # Extend q_values well beyond what sb_gpav can handle.
-    # R = q^2 is the approximate total dataset size.
     # ------------------------------------------------------------------
+    # Three slope combinations from Sysoev et al. (Table 1/2).
+    # noise_scale = q (from make_dataset_params) keeps SNR constant as q grows.
+    SLOPE_CONFIGS = [
+        {"model": "linear_low",  "label": "low  (α=0.2, 0.2)"},
+        {"model": "linear_mix",  "label": "mix  (α=0.2, 2.0)"},
+        {"model": "linear_high", "label": "high (α=2.0, 2.0)"},
+    ]
+
+    if args.model:
+        SLOPE_CONFIGS = [sc for sc in SLOPE_CONFIGS if sc["model"] == args.model]
+        if not SLOPE_CONFIGS:
+            raise ValueError(f"Unknown model {args.model!r}. Choose from linear_low, linear_mix, linear_high.")
+
     q_values = [
-        100,      # R ~  10 000
-        1_000,    # R ~   1 000 000
-        10_000,   # R ~ 100 000 000
-        100_000,  # R ~  10^10   (run only if hardware allows)
+        100,      # R ~     10 000
+        1_000,    # R ~  1 000 000
+        10_000,   # R ~ 10^8
+        100_000,  # R ~ 10^10  (run only if hardware allows)
     ]
     R_values = [q * q for q in q_values]
 
-    max_allowed_seconds = None  # set e.g. 3600 to auto-stop
+    # Auto-stop if any size's average trial time exceeds this (seconds).
+    # NOTE: the check happens AFTER a full trial completes — it cannot
+    # interrupt a running OperadicGPAV call mid-way.
+    # Set to None to disable and run all sizes regardless.
+    max_allowed_seconds = None   # 30 min — reasonable for Colab
 
-    out_csv  = "scaling_ogpav_results.csv"
-    out_json = "scaling_ogpav_results.json"
-
-    # ------------------------------------------------------------------
-    # Resume support
-    # ------------------------------------------------------------------
-    rows: List[dict]     = []
-    failures: List[dict] = []
-    completed_R: set     = set()
-
-    if os.path.exists(out_json):
-        try:
-            with open(out_json, "r", encoding="utf-8") as f:
-                old = json.load(f)
-            rows       = old.get("results", [])
-            failures   = old.get("failures", [])
-            completed_R = {row["R_target"] for row in rows}
-            print(f"Loaded prior progress: {len(rows)} done, {len(failures)} failed.")
-        except Exception as e:
-            print(f"Warning: could not load {out_json}: {e}")
-
-    def save_progress(rows, failures):
-        if rows:
-            with open(out_csv, "w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-                writer.writeheader()
-                writer.writerows(rows)
-        with open(out_json, "w", encoding="utf-8") as f:
-            json.dump({"results": rows, "failures": failures}, f, indent=2)
+    # Auto-detect available CPUs
+    import multiprocessing
+    n_cpus      = multiprocessing.cpu_count()
+    max_workers = max(1, n_cpus)
+    print(f"Detected {n_cpus} CPU(s) → using max_workers={max_workers}")
 
     # ------------------------------------------------------------------
-    # Experiment loop
+    # Outer loop over slope configurations
     # ------------------------------------------------------------------
-    for q, R in zip(q_values, R_values):
-        if R in completed_R:
-            print(f"Skipping already completed R={R:,}")
-            continue
+    all_slope_rows: Dict[str, List[dict]] = {}
 
-        _p = make_dataset_params(q)
-        print(f"\n{'='*80}")
-        print(
-            f"Running R={R:,}  (q={q}, nQ={_p['nQ']}, avg_R={_p['avg_R']}, "
-            f"radius={_p['radius']:.3f}, center_step={_p['center_grid_step']}, "
-            f"square_max={_p['square_max']})"
-        )
+    for slope_cfg in SLOPE_CONFIGS:
+        model_key = slope_cfg["model"]
+        label     = slope_cfg["label"]
 
-        try:
-            results = run_repeated_experiment(
-                n_trials=3,
-                q=q,
-                fiber_count_dist="poisson",
-                model="nonlinear",
-                noise="normal",
-                noise_scale=1.0,
-                base_seed=2026 + q,
-                max_workers=32,
-                use_trend_following_first=False,
-                use_trend_following_blocks=False,
-                verbose=True,
-            )
+        out_csv  = f"scaling_ogpav_{model_key}.csv"
+        out_json = f"scaling_ogpav_{model_key}.json"
 
-            summary = summarize_results(results)
-            realized_N      = [int(r["sizes"]["N"])          for r in results]
-            realized_Q_edges = [int(r["sizes"]["Q_num_edges"]) for r in results]
+        print(f"\n{'#'*80}")
+        print(f"# Slope config: {label}")
+        print(f"{'#'*80}")
 
-            row = {
-                "R_target":            int(R),
-                "sqrt_R":              int(q),
-                "nQ_input":            int(_p["nQ"]),
-                "avg_R_input":         int(_p["avg_R"]),
-                "N_actual_mean":       float(np.mean(realized_N)),
-                "N_actual_std":        float(np.std(realized_N, ddof=0)),
-                "Q_edges_mean":        float(np.mean(realized_Q_edges)),
-                "Q_edges_std":         float(np.std(realized_Q_edges, ddof=0)),
-                "operadic_time_mean":  float(summary["timings_sec"]["operadic_gpav"]["mean"]),
-                "operadic_time_std":   float(summary["timings_sec"]["operadic_gpav"]["std"]),
-                "baseline_rmse_mean":  float(summary["baseline_noisy_vs_truth"]["rmse"]["mean"]),
-                "baseline_rmse_std":   float(summary["baseline_noisy_vs_truth"]["rmse"]["std"]),
-                "operadic_rmse_mean":  float(summary["operadic_vs_truth"]["rmse"]["mean"]),
-                "operadic_rmse_std":   float(summary["operadic_vs_truth"]["rmse"]["std"]),
-                "operadic_mse_mean":   float(summary["operadic_vs_truth"]["mse"]["mean"]),
-                "operadic_mse_std":    float(summary["operadic_vs_truth"]["mse"]["std"]),
-                "operadic_mae_mean":   float(summary["operadic_vs_truth"]["mae"]["mean"]),
-                "operadic_mae_std":    float(summary["operadic_vs_truth"]["mae"]["std"]),
-            }
+        rows: List[dict]     = []
+        failures: List[dict] = []
+        completed_R: set     = set()
 
-            rows.append(row)
-            save_progress(rows, failures)
+        if os.path.exists(out_json):
+            try:
+                with open(out_json, "r", encoding="utf-8") as f:
+                    old = json.load(f)
+                rows        = old.get("results", [])
+                failures    = old.get("failures", [])
+                completed_R = {row["R_target"] for row in rows}
+                print(f"  Loaded prior progress: {len(rows)} done, {len(failures)} failed.")
+            except Exception as e:
+                print(f"  Warning: could not load {out_json}: {e}")
 
-            print(
-                f"Done R={R:,} | N_mean={row['N_actual_mean']:.0f} | "
-                f"time={row['operadic_time_mean']:.3f}s | "
-                f"RMSE={row['operadic_rmse_mean']:.6g}"
-            )
+        def _save(rows, failures, _csv=out_csv, _json=out_json):
+            if rows:
+                with open(_csv, "w", newline="", encoding="utf-8") as f:
+                    w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+                    w.writeheader()
+                    w.writerows(rows)
+            with open(_json, "w", encoding="utf-8") as f:
+                json.dump({"results": rows, "failures": failures}, f, indent=2)
 
-            if max_allowed_seconds and row["operadic_time_mean"] > max_allowed_seconds:
-                print("Stopping: runtime limit reached.")
+        stop_slope = False
+
+        for q, R in zip(q_values, R_values):
+            if stop_slope:
                 break
+            if R in completed_R:
+                print(f"  Skipping already completed R={R:,}")
+                continue
 
-        except Exception as e:
-            failures.append({
-                "R_target":  int(R),
-                "sqrt_R":    int(q),
-                "nQ_input":  int(_p["nQ"]),
-                "avg_R_input": int(_p["avg_R"]),
-                "error":     str(e),
-                "traceback": traceback.format_exc(),
-            })
-            save_progress(rows, failures)
-            print(f"FAILED at R={R:,}: {e}")
-            break
+            _p          = make_dataset_params(q)
+            noise_scale = _p["noise_scale"]   # float(q): signal ∝ q → noise ∝ q keeps SNR constant
 
-        finally:
-            gc.collect()
+            print(f"\n  {'='*66}")
+            print(
+                f"  R={R:,}  q={q}  nQ={_p['nQ']}  avg_R={_p['avg_R']}  "
+                f"noise_scale={noise_scale:.0f}  model={model_key}"
+            )
+
+            try:
+                results = run_repeated_experiment(
+                    n_trials=3,
+                    q=q,
+                    fiber_count_dist="poisson",
+                    model=model_key,
+                    noise="normal",
+                    noise_scale=noise_scale,
+                    base_seed=2026 + q,
+                    max_workers=max_workers,
+                    use_trend_following_first=False,
+                    use_trend_following_blocks=False,
+                    verbose=True,
+                )
+
+                summary          = summarize_results(results)
+                realized_N       = [int(r["sizes"]["N"])           for r in results]
+                realized_Q_edges = [int(r["sizes"]["Q_num_edges"])  for r in results]
+
+                baseline_rmse = summary["baseline_noisy_vs_truth"]["rmse"]["mean"]
+                operadic_rmse = summary["operadic_vs_truth"]["rmse"]["mean"]
+                rel_imp       = 1.0 - operadic_rmse / max(baseline_rmse, 1e-12)
+
+                # Compute actual mean N first so we can use it in normalisation
+                N_actual_mean = float(np.mean(realized_N))
+
+                row = {
+                    "slope_config":         model_key,
+                    "R_target":             int(R),
+                    "sqrt_R":               int(q),
+                    "nQ_input":             int(_p["nQ"]),
+                    "avg_R_input":          int(_p["avg_R"]),
+                    "noise_scale":          noise_scale,
+                    "N_actual_mean":        N_actual_mean,
+                    "N_actual_std":         float(np.std(realized_N, ddof=0)),
+                    "Q_edges_mean":         float(np.mean(realized_Q_edges)),
+                    "Q_edges_std":          float(np.std(realized_Q_edges, ddof=0)),
+                    "operadic_time_mean":   float(summary["timings_sec"]["operadic_gpav"]["mean"]),
+                    "operadic_time_std":    float(summary["timings_sec"]["operadic_gpav"]["std"]),
+                    "operadic_mem_mb_mean": float(summary["memory_mb"]["operadic_gpav"]["mean"]),
+                    "operadic_mem_mb_std":  float(summary["memory_mb"]["operadic_gpav"]["std"]),
+                    "operadic_rss_mb_mean": float(summary["rss_delta_mb"]["operadic_gpav"]["mean"]),
+                    "operadic_rss_mb_std":  float(summary["rss_delta_mb"]["operadic_gpav"]["std"]),
+                    "operadic_obj_mean":    float(summary["objective"]["operadic_gpav"]["mean"]),
+                    "operadic_obj_std":     float(summary["objective"]["operadic_gpav"]["std"]),
+                    "baseline_rmse_mean":  baseline_rmse,
+                    "baseline_rmse_std":   float(summary["baseline_noisy_vs_truth"]["rmse"]["std"]),
+                    "operadic_rmse_mean":  operadic_rmse,
+                    "operadic_rmse_std":   float(summary["operadic_vs_truth"]["rmse"]["std"]),
+                    "operadic_mse_mean":   float(summary["operadic_vs_truth"]["mse"]["mean"]),
+                    "operadic_mse_std":    float(summary["operadic_vs_truth"]["mse"]["std"]),
+                    "operadic_mae_mean":   float(summary["operadic_vs_truth"]["mae"]["mean"]),
+                    "operadic_mae_std":    float(summary["operadic_vs_truth"]["mae"]["std"]),
+                    "rel_rmse_improvement": float(rel_imp),
+                    # --- Normalised metrics (should be ~constant across q) ---
+                    "obj_normalised":       float(summary["objective"]["operadic_gpav"]["mean"]
+                                                  / max(N_actual_mean * noise_scale**2, 1e-12)),
+                    "rmse_normalised":      float(operadic_rmse / max(noise_scale, 1e-12)),
+                    "baseline_rmse_normalised": float(baseline_rmse / max(noise_scale, 1e-12)),
+                }
+
+                rows.append(row)
+                _save(rows, failures)
+
+                print(
+                    f"  Done | N={row['N_actual_mean']:.0f} | "
+                    f"time={row['operadic_time_mean']:.3f}s | "
+                    f"tracemalloc={row['operadic_mem_mb_mean']:.1f}MB | "
+                    f"RSS_delta={row['operadic_rss_mb_mean']:.1f}MB | "
+                    f"obj={row['operadic_obj_mean']:.4g} (norm={row['obj_normalised']:.3f}) | "
+                    f"RMSE={operadic_rmse:.4g} (norm={row['rmse_normalised']:.3f}) | "
+                    f"baseline={baseline_rmse:.4g} (norm={row['baseline_rmse_normalised']:.3f}) | "
+                    f"improvement={rel_imp:.1%}"
+                )
+
+                if max_allowed_seconds and row["operadic_time_mean"] > max_allowed_seconds:
+                    print("  Stopping slope config: runtime limit reached.")
+                    stop_slope = True
+
+            except Exception as e:
+                failures.append({
+                    "slope_config":  model_key,
+                    "R_target":      int(R),
+                    "sqrt_R":        int(q),
+                    "nQ_input":      int(_p["nQ"]),
+                    "avg_R_input":   int(_p["avg_R"]),
+                    "error":         str(e),
+                    "traceback":     traceback.format_exc(),
+                })
+                _save(rows, failures)
+                print(f"  FAILED at R={R:,}: {e}")
+                stop_slope = True
+
+            finally:
+                gc.collect()
+
+        all_slope_rows[model_key] = rows
 
     # ------------------------------------------------------------------
-    # Plots
+    # Plots — all three slopes on the same axes
     # ------------------------------------------------------------------
-    if not rows:
-        print("No successful rows; skipping plots.")
-    else:
-        rows_sorted = sorted(rows, key=lambda r: r["R_target"])
-        x      = np.array([r["R_target"]           for r in rows_sorted], dtype=float)
-        t_mean = np.array([r["operadic_time_mean"]  for r in rows_sorted], dtype=float)
-        t_std  = np.array([r["operadic_time_std"]   for r in rows_sorted], dtype=float)
-        e_mean = np.array([r["operadic_rmse_mean"]  for r in rows_sorted], dtype=float)
-        e_std  = np.array([r["operadic_rmse_std"]   for r in rows_sorted], dtype=float)
+    colors = {
+        "linear_low":  "tab:blue",
+        "linear_mix":  "tab:orange",
+        "linear_high": "tab:green",
+    }
 
-        # Time (log-log)
-        plt.figure(figsize=(8, 5))
-        plt.plot(x, t_mean, marker="o", label="OperadicGPAV time")
-        plt.fill_between(x, t_mean - t_std, t_mean + t_std, alpha=0.2)
-        plt.xscale("log"); plt.yscale("log")
-        plt.xlabel("Target dataset size R"); plt.ylabel("Time (s)")
-        plt.title("OperadicGPAV runtime vs R (log-log)")
-        plt.legend(); plt.grid(True, which="both", alpha=0.3); plt.tight_layout()
-        plt.savefig("ogpav_time_vs_R.png", dpi=220); plt.close()
-
-        # RMSE tube
-        plt.figure(figsize=(8, 5))
-        plt.plot(x, e_mean, marker="o", label="OperadicGPAV RMSE")
-        plt.fill_between(x, e_mean - e_std, e_mean + e_std, alpha=0.2)
+    def slope_plot(mean_key: str, std_key: str, ylabel: str,
+                   fname: str, logy: bool = False):
+        plt.figure(figsize=(9, 5))
+        has_data = False
+        for sc in SLOPE_CONFIGS:
+            key = sc["model"]
+            rs  = sorted(all_slope_rows.get(key, []), key=lambda r: r["R_target"])
+            if not rs:
+                continue
+            has_data = True
+            x    = np.array([r["R_target"] for r in rs], dtype=float)
+            mean = np.array([r[mean_key]   for r in rs], dtype=float)
+            std  = np.array([r[std_key]    for r in rs], dtype=float)
+            plt.plot(x, mean, marker="o", label=sc["label"], color=colors[key])
+            plt.fill_between(x, mean - std, mean + std, alpha=0.15, color=colors[key])
+        if not has_data:
+            plt.close()
+            return
         plt.xscale("log")
-        plt.xlabel("Target dataset size R"); plt.ylabel("RMSE")
-        plt.title("OperadicGPAV RMSE vs R (mean ± std, 3 trials)")
-        plt.legend(); plt.grid(True, alpha=0.3); plt.tight_layout()
-        plt.savefig("ogpav_rmse_vs_R.png", dpi=220); plt.close()
+        if logy:
+            plt.yscale("log")
+        plt.xlabel("Target dataset size R")
+        plt.ylabel(ylabel)
+        plt.title(f"OperadicGPAV — {ylabel} vs R  (noise_scale = q)")
+        plt.legend()
+        plt.grid(True, which="both" if logy else "major", alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(fname, dpi=220)
+        plt.close()
+        print(f"Saved {fname}")
 
-        print("\nSaved plots: ogpav_time_vs_R.png, ogpav_rmse_vs_R.png")
+    slope_plot("operadic_time_mean",   "operadic_time_std",
+               "Time (s)",     "ogpav_time_vs_R.png",        logy=True)
+    slope_plot("operadic_rmse_mean",   "operadic_rmse_std",
+               "RMSE",         "ogpav_rmse_vs_R.png")
+    slope_plot("baseline_rmse_mean",   "baseline_rmse_std",
+               "Baseline RMSE (noisy signal)", "ogpav_baseline_vs_R.png")
+    slope_plot("rel_rmse_improvement", "operadic_rmse_std",
+               "Relative RMSE improvement", "ogpav_improvement_vs_R.png")
 
-    print(f"\nSaved: {out_csv}  {out_json}")
+    print("\nAll done.")

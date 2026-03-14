@@ -565,35 +565,24 @@ if __name__ == "__main__":
     # ------------------------------------------------------------------
     # Configuration
     # ------------------------------------------------------------------
-    # We use only perfect squares R = q^2, so that:
-    #   nQ = q
-    #   avg_R = q
-    #   n_segments = q
-    #
-    # This means the intended segment size is also about q = sqrt(R).
-    #
-    # Start around 6000 total samples and then grow fast toward big data.
-    # Since R must be a square, 80^2 = 6400 is the closest clean start.
-    q_values = [
-        10, #100
-        100, #10, 000
-        1000,  # 1,000,000
-        10000,  # 100,000,000
-        100000,  # 10,000,000,000
+    # Three slope combinations from Sysoev et al. (Table 1/2).
+    # noise_scale = q (from make_dataset_params) keeps SNR constant as q grows.
+    SLOPE_CONFIGS = [
+        {"model": "linear_low",  "label": "low  (α=0.2, 0.2)"},
+        {"model": "linear_mix",  "label": "mix  (α=0.2, 2.0)"},
+        {"model": "linear_high", "label": "high (α=2.0, 2.0)"},
     ]
+
+    # Medium-scale: up to what sb_gpav can handle
+    q_values = [10, 100, 1_000, 10_000]
     R_values = [q * q for q in q_values]
 
-    # Stop automatically if either algorithm becomes too slow.
-    # Set to None to disable.
-    max_allowed_seconds = None  # example: 600
-
-    out_csv = "scaling_results.csv"
-    out_json = "scaling_results.json"
+    max_allowed_seconds = None  # set e.g. 600 to auto-stop
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-    def save_progress(rows, failures):
+    def save_progress(rows, failures, out_csv, out_json):
         """Save CSV and JSON after every successful or failed experiment."""
         if rows:
             fieldnames = list(rows[0].keys())
@@ -601,16 +590,8 @@ if __name__ == "__main__":
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()
                 writer.writerows(rows)
-
         with open(out_json, "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "results": rows,
-                    "failures": failures,
-                },
-                f,
-                indent=2,
-            )
+            json.dump({"results": rows, "failures": failures}, f, indent=2)
 
     def make_plots_from_rows(rows):
         """Create plots from already-saved rows."""
@@ -686,71 +667,82 @@ if __name__ == "__main__":
         print("  time_vs_R_loglog.png")
         print("  rmse_tube_vs_R.png")
 
-    # ------------------------------------------------------------------
-    # Resume support: if JSON exists, load prior successful rows/failures
-    # ------------------------------------------------------------------
-    rows = []
-    failures = []
-    completed_R = set()
+    all_slope_rows = {}  # model_key -> list of row dicts
 
-    if os.path.exists(out_json):
-        try:
-            with open(out_json, "r", encoding="utf-8") as f:
-                old = json.load(f)
-            rows = old.get("results", [])
-            failures = old.get("failures", [])
-            completed_R = {row["R_target"] for row in rows}
-            print(f"Loaded existing progress: {len(rows)} successful runs, {len(failures)} failures.")
-        except Exception as e:
-            print(f"Warning: could not load existing {out_json}: {e}")
+    for slope_cfg in SLOPE_CONFIGS:
+        model_key = slope_cfg["model"]
+        label     = slope_cfg["label"]
 
-    # ------------------------------------------------------------------
-    # Main experiment loop
-    # ------------------------------------------------------------------
-    for q, R in zip(q_values, R_values):
-        if R in completed_R:
-            print(f"Skipping already completed R={R}")
-            continue
+        out_csv  = f"scaling_{model_key}.csv"
+        out_json = f"scaling_{model_key}.json"
 
-        n_segments = q  # segment size ~ sqrt(R)
-        _p = make_dataset_params(q)
-        print("\n" + "=" * 80)
-        print(f"Running target R={R}")
-        print(
-            f"sqrt(R)={q}, nQ={_p['nQ']}, avg_R={_p['avg_R']}, "
-            f"radius={_p['radius']:.3f}, center_step={_p['center_grid_step']}, "
-            f"square_max={_p['square_max']}, n_segments={n_segments}"
-        )
+        print(f"\n{'#'*80}")
+        print(f"# Slope config: {label}")
+        print(f"{'#'*80}")
+        # Resume support  per slope config
+        rows = []
+        failures = []
+        completed_R = set()
 
-        try:
-            # 3 repetitions so we can build mean/std tubes
-            results = run_repeated_experiment(
-                n_trials=3,
-                q=q,
-                fiber_count_dist="poisson",
-                model="nonlinear",
-                noise="normal",
-                noise_scale=1.0,
-                base_seed=2026 + q,   # vary seed with size
-                n_segments=n_segments,
-                max_workers=32,
-                use_trend_following_first=False,
-                use_trend_following_blocks=False,
-                verbose=False,
+        if os.path.exists(out_json):
+            try:
+                with open(out_json, "r", encoding="utf-8") as f:
+                    old = json.load(f)
+                rows = old.get("results", [])
+                failures = old.get("failures", [])
+                completed_R = {row["R_target"] for row in rows}
+                print(f"  Loaded existing progress: {len(rows)} done, {len(failures)} failures.")
+            except Exception as e:
+                print(f"  Warning: could not load {out_json}: {e}")
+
+        # ------------------------------------------------------------------
+        # Inner experiment loop (fixed slope config)
+        # ------------------------------------------------------------------
+        stop_slope = False
+        for q, R in zip(q_values, R_values):
+            if stop_slope:
+                break
+            if R in completed_R:
+                print(f"  Skipping already completed R={R}")
+                continue
+
+            n_segments  = q
+            _p          = make_dataset_params(q)
+            noise_scale = _p["noise_scale"]   # float(q)
+            print(f"\n  {'='*70}")
+            print(
+                f"  R={R}  q={q}  nQ={_p['nQ']}  noise_scale={noise_scale:.0f}  "
+                f"model={model_key}"
             )
 
-            summary = summarize_results(results)
+            try:
+                results = run_repeated_experiment(
+                    n_trials=3,
+                    q=q,
+                    fiber_count_dist="poisson",
+                    model=model_key,
+                    noise="normal",
+                    noise_scale=noise_scale,
+                    base_seed=2026 + q,
+                    n_segments=n_segments,
+                    max_workers=32,
+                    use_trend_following_first=False,
+                    use_trend_following_blocks=False,
+                    verbose=False,
+                )
 
-            # actual realized sample sizes can vary because avg_R is an average
-            realized_N = [int(r["sizes"]["N"]) for r in results]
-            realized_Q_edges = [int(r["sizes"]["Q_num_edges"]) for r in results]
+                summary = summarize_results(results)
+                realized_N       = [int(r["sizes"]["N"]) for r in results]
+                realized_Q_edges = [int(r["sizes"]["Q_num_edges"]) for r in results]
 
-            row = {
-                "R_target": int(R),
-                "sqrt_R": int(q),
-                "nQ_input": int(_p["nQ"]),
-                "avg_R_input": int(_p["avg_R"]),
-                "n_segments": int(n_segments),
+                row = {
+                    "slope_config": model_key,
+                    "R_target":     int(R),
+                    "sqrt_R":       int(q),
+                    "nQ_input":     int(_p["nQ"]),
+                    "avg_R_input":  int(_p["avg_R"]),
+                    "noise_scale":  noise_scale,
+                    "n_segments":   int(n_segments),
 
                 "N_actual_mean": float(np.mean(realized_N)),
                 "N_actual_std": float(np.std(realized_N, ddof=0)),
@@ -793,62 +785,89 @@ if __name__ == "__main__":
                 "sb_max_abs_std": float(summary["segmented_vs_truth"]["max_abs"]["std"]),
             }
 
-            rows.append(row)
-            save_progress(rows, failures)
+                rows.append(row)
+                save_progress(rows, failures, out_csv, out_json)
 
-            print(
-                f"Done R={R} | "
-                f"N_actual_mean={row['N_actual_mean']:.1f} | "
-                f"Operadic time={row['operadic_time_mean']:.3f}s | "
-                f"SB time={row['sb_time_mean']:.3f}s | "
-                f"Operadic RMSE={row['operadic_rmse_mean']:.6g} | "
-                f"SB RMSE={row['sb_rmse_mean']:.6g}"
-            )
+                print(
+                    f"  Done R={R} | N={row['N_actual_mean']:.0f} | "
+                    f"Operadic={row['operadic_time_mean']:.3f}s | "
+                    f"SB={row['sb_time_mean']:.3f}s | "
+                    f"Operadic RMSE={row['operadic_rmse_mean']:.4g} | "
+                    f"SB RMSE={row['sb_rmse_mean']:.4g}"
+                )
 
-            # Optional runtime stop
-            if max_allowed_seconds is not None:
-                if (
+                if max_allowed_seconds is not None and (
                     row["operadic_time_mean"] > max_allowed_seconds
                     or row["sb_time_mean"] > max_allowed_seconds
                 ):
-                    print("Stopping because runtime limit was reached.")
-                    break
+                    print("  Stopping slope config: runtime limit reached.")
+                    stop_slope = True
 
-        except Exception as e:
-            failures.append(
-                {
-                    "R_target": int(R),
-                    "sqrt_R": int(q),
-                    "nQ_input": int(_p["nQ"]),
-                    "avg_R_input": int(_p["avg_R"]),
-                    "n_segments": int(n_segments),
-                    "error": str(e),
-                    "traceback": traceback.format_exc(),
-                }
-            )
-            save_progress(rows, failures)
-            print(f"FAILED at R={R}: {e}")
-            break
+            except Exception as e:
+                failures.append({
+                    "slope_config":  model_key,
+                    "R_target":      int(R),
+                    "sqrt_R":        int(q),
+                    "nQ_input":      int(_p["nQ"]),
+                    "avg_R_input":   int(_p["avg_R"]),
+                    "n_segments":    int(n_segments),
+                    "error":         str(e),
+                    "traceback":     traceback.format_exc(),
+                })
+                save_progress(rows, failures, out_csv, out_json)
+                print(f"  FAILED at R={R}: {e}")
+                stop_slope = True
 
-        finally:
-            # Force cleanup between experiment sizes
-            gc.collect()
+            finally:
+                gc.collect()
+
+        all_slope_rows[model_key] = rows
 
     # ------------------------------------------------------------------
-    # Always try to make plots from whatever has been saved so far
+    # Plots — all three slopes on the same axes
     # ------------------------------------------------------------------
+    colors = {
+        "linear_low":  "tab:blue",
+        "linear_mix":  "tab:orange",
+        "linear_high": "tab:green",
+    }
+    LABELS = {sc["model"]: sc["label"] for sc in SLOPE_CONFIGS}
+
+    def slope_plot(mean_key, std_key, ylabel, fname, logy=False):
+        plt.figure(figsize=(9, 5))
+        has_data = False
+        for key, rs_all in all_slope_rows.items():
+            rs = sorted(rs_all, key=lambda r: r["R_target"])
+            if not rs:
+                continue
+            has_data = True
+            x    = np.array([r["R_target"] for r in rs], dtype=float)
+            mean = np.array([r[mean_key]   for r in rs], dtype=float)
+            std  = np.array([r[std_key]    for r in rs], dtype=float)
+            plt.plot(x, mean, marker="o", label=LABELS[key], color=colors[key])
+            plt.fill_between(x, mean-std, mean+std, alpha=0.15, color=colors[key])
+        if not has_data:
+            plt.close(); return
+        plt.xscale("log")
+        if logy: plt.yscale("log")
+        plt.xlabel("Target dataset size R")
+        plt.ylabel(ylabel)
+        plt.title(f"{ylabel} vs R  (OGPAV vs SB-GPAV, noise_scale=q)")
+        plt.legend(); plt.grid(True, which="both" if logy else "major", alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(fname, dpi=220); plt.close()
+        print(f"Saved {fname}")
+
     try:
-        # Reload from JSON to ensure we plot the on-disk data
-        if os.path.exists(out_json):
-            with open(out_json, "r", encoding="utf-8") as f:
-                saved = json.load(f)
-            saved_rows = saved.get("results", [])
-            make_plots_from_rows(saved_rows)
-        else:
-            make_plots_from_rows(rows)
+        slope_plot("operadic_time_mean", "operadic_time_std",
+                   "OperadicGPAV time (s)", "time_ogpav_vs_R.png", logy=True)
+        slope_plot("sb_time_mean",       "sb_time_std",
+                   "SB-GPAV time (s)",     "time_sb_vs_R.png",    logy=True)
+        slope_plot("operadic_rmse_mean", "operadic_rmse_std",
+                   "OperadicGPAV RMSE",    "rmse_ogpav_vs_R.png")
+        slope_plot("sb_rmse_mean",       "sb_rmse_std",
+                   "SB-GPAV RMSE",         "rmse_sb_vs_R.png")
     except Exception as e:
         print(f"Could not generate plots: {e}")
 
-    print("\nSaved:")
-    print(f"  {out_csv}")
-    print(f"  {out_json}")
+    print("\nAll done.")
