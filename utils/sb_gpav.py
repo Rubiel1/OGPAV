@@ -54,26 +54,16 @@ def _build_induced_hasse(
     indices: List[int],
     X: Any, 
     f: Callable[[Any, Any], bool],
-    assume_component_wise: bool = False
+    assume_component_wise: bool = False,
+    f_idx: Optional[Callable[[int, int], bool]] = None
 ) -> nx.DiGraph:
     """
     Build local Hasse diagram for a segment using memory-efficient construction.
     """
     def check_precedence(i: int, j: int) -> bool:
-        # i, j are indices in X
-        # Strict precedence: f(X[i], X[j]) AND i != j
-        # Assuming topo order means if i precedes j in list, check f(i, j).
-        # We enforce strict inequality for graph edges if values identical but distinct indices?
-        # Actually standard GPAV works on strict poset.
-        # If X[i] == X[j], they are equivalent. 
-        # For simplicity, we use strict f(X[i], X[j]) is True.
-        # If f(a,b) means a <= b, we check a <= b.
-        # But for Hasse diagram, we usually want strict < relation or non-equivalence.
-        # We rely on user f(a,b) meaning a <= b.
-        # We add edge if a <= b. 
-        # Incremental builder handles transitive reduction, so equal elements might form loops?
-        # No, because loop `range(idx_j - 1, -1, -1)` enforces index order.
-        return f(X[i], X[j])
+        if f_idx is not None:
+            return f_idx(i, j)
+        return f(X[i], X[j])        
 
     return _build_dag_incrementally(indices, check_precedence, assume_component_wise)
 
@@ -85,10 +75,11 @@ def _build_induced_hasse(
 def _get_block_extrema(
     block_indices: List[int],
     X: Any,
-    f: Callable[[Any, Any], bool]
+    f: Callable[[Any, Any], bool],
+    f_idx: Optional[Callable[[int, int], bool]] = None
 ) -> Tuple[List[int], List[int]]:
     """
-    Find MIN(B) and MAX(B) within the block B using array comparator.
+    Find MIN(B) and MAX(B) within the block B using array or index comparator.
     
     MIN(B) = { u in B | not exists v in B s.t. v < u }
     MAX(B) = { u in B | not exists v in B s.t. u < v }
@@ -104,9 +95,11 @@ def _get_block_extrema(
             if u == v: 
                 continue
             val_v = X[v]
-            if f(val_v, val_u):
+            v_leq_u = f_idx(v, u) if f_idx is not None else f(val_v, val_u)
+            if v_leq_u:
                 # v <= u. Check strictness v < u
-                if not f(val_u, val_v):
+                u_leq_v = f_idx(u, v) if f_idx is not None else f(val_u, val_v)
+                if not u_leq_v:
                     is_minimal = False
                     break
         if is_minimal:
@@ -118,9 +111,11 @@ def _get_block_extrema(
             if u == v:
                 continue
             val_v = X[v]
-            if f(val_u, val_v):
+            u_leq_v = f_idx(u, v) if f_idx is not None else f(val_u, val_v)
+            if u_leq_v:
                 # u <= v. Check strictness u < v
-                if not f(val_v, val_u):
+                v_leq_u = f_idx(v, u) if f_idx is not None else f(val_v, val_u)
+                if not v_leq_u:
                     is_maximal = False
                     break
         if is_maximal:
@@ -137,7 +132,8 @@ def _block_precedes(
     minB_indices: List[int],
     maxA_indices: List[int],
     X: Any,
-    f: Callable[[Any, Any], bool]
+    f: Callable[[Any, Any], bool],
+    f_idx: Optional[Callable[[int, int], bool]] = None
 ) -> bool:
     """
     Returns True if Block B precedes Block A (B -> A).
@@ -147,8 +143,12 @@ def _block_precedes(
         val_b = X[b]
         for a in maxA_indices:
             val_a = X[a]
-            if f(val_b, val_a):
-                return True
+            if f_idx is not None:
+                if f_idx(b, a):
+                    return True
+            else:
+                if f(val_b, val_a):
+                    return True
     return False
 
 
@@ -176,7 +176,8 @@ def sb_gpav(
     n_segments: int = 10,
     assume_component_wise: bool = False,
     verbose: bool = False,
-    debug: bool = False
+    debug: bool = False,
+    f_idx: Optional[Callable[[int, int], bool]] = None
 ) -> Union[np.ndarray, Tuple[np.ndarray, Dict]]:
     """
     Segmentation-Based GPAV for array inputs with memory-efficient construction.
@@ -224,7 +225,7 @@ def sb_gpav(
             continue
             
         # Build from array elements
-        H_seg = _build_induced_hasse(seg_indices, X, f, assume_component_wise=assume_component_wise)
+        H_seg = _build_induced_hasse(seg_indices, X, f, assume_component_wise=assume_component_wise, f_idx=f_idx)
         
         Y_map = {idx: float(Y[idx]) for idx in seg_indices}
         W_map = {idx: float(W[idx]) for idx in seg_indices}
@@ -242,7 +243,7 @@ def sb_gpav(
         for b_dict in seg_block_dicts:
             members = b_dict['labels'] # list of indices
             # Compute extrema using array comparator
-            mins, maxs = _get_block_extrema(members, X, f)
+            mins, maxs = _get_block_extrema(members, X, f, f_idx=f_idx)
             
             blk = SegmentBlock(
                 global_id=global_block_counter,
@@ -260,7 +261,7 @@ def sb_gpav(
     
     def check_block_precedence(i: int, j: int) -> bool:
         # i, j are global block IDs
-        return _block_precedes(all_blocks[i].mins, all_blocks[j].maxs, X, f)
+        return _block_precedes(all_blocks[i].mins, all_blocks[j].maxs, X, f, f_idx=f_idx)
     
     # Use incremental builder for blocks too.
     # Assumes sequential block IDs are topological order (which they are by segment ordering).

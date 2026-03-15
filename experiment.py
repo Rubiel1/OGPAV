@@ -36,10 +36,13 @@ import time
 import math
 import json
 import traceback
+import tracemalloc
 from typing import Dict, List, Tuple, Optional
 
 import numpy as np
 import networkx as nx
+import psutil as _psutil
+_proc = _psutil.Process(os.getpid())
 
 from OperadicGPAV import OperadicGPAV
 from utils.geometric_sb_dataset import (
@@ -47,7 +50,8 @@ from utils.geometric_sb_dataset import (
     make_dataset_params,
     MODEL_FUNCS,
 )
-from utils.sb_gpav import sb_gpav
+from utils.sb_gpav import sb_gpav, _build_induced_hasse, default_comparator
+from utils.gpav import gpav_op
 
 import csv
 import gc
@@ -263,6 +267,80 @@ def run_one_trial(
         print("Number of Q edges:", Q.number_of_edges())
         print("fiber lengths:", R_datasets.get_fiber_lengths())
 
+        # --------------------------------------------------------
+        # 1.5. Build Custom Comparator for SB-GPAV and PGPAV
+        # --------------------------------------------------------
+        # To prove exactness, we must constrain the full array-based algorithms
+        # to the exact macroscopic topological shape that OperadicGPAV operates on.
+        Q_tc = nx.transitive_closure(Q)
+        
+        # We need `idx_to_fiber` map, but we haven't built indices_list yet.
+        # Let's derive it directly from fiber lengths.
+        lengths_for_map = R_datasets.get_fiber_lengths()
+        idx_to_fiber = {}
+        curr_idx = 0
+        for fib_id, n_points in enumerate(lengths_for_map):
+            for _ in range(n_points):
+                idx_to_fiber[curr_idx] = fib_id
+                curr_idx += 1
+
+        # We must identify the min/max elements for each fiber 
+        # based on simple component-wise dominance internal to that fiber.
+        def _get_fiber_mins_maxs(fiber_indices: List[int]) -> Tuple[List[int], List[int]]:
+            mins, maxs = [], []
+            for u in fiber_indices:
+                val_u = X[u]
+                is_min = True
+                is_max = True
+                for v in fiber_indices:
+                    if u == v: continue
+                    val_v = X[v]
+                    if np.all(val_v <= val_u) and not np.all(val_u <= val_v):
+                        is_min = False
+                    if np.all(val_u <= val_v) and not np.all(val_v <= val_u):
+                        is_max = False
+                if is_min: mins.append(u)
+                if is_max: maxs.append(u)
+            return mins, maxs
+
+        fiber_mins = {}
+        fiber_maxs = {}
+        for f_id, fib_indices in enumerate(indices_list):
+            fiber_mins[f_id], fiber_maxs[f_id] = _get_fiber_mins_maxs(fib_indices)
+
+        def check_ogpav_precedence(i: int, j: int, X_ref: np.ndarray) -> bool:
+            f_i = idx_to_fiber[i]
+            f_j = idx_to_fiber[j]
+            # Same fiber
+            if f_i == f_j: 
+                return bool(np.all(X_ref[i] <= X_ref[j]))
+            
+            # Different fibers: OperadicGPAV connects MAX(f_i) -> MIN(f_j).
+            # So `i` only precedes `j` if there's a path i -> max_i -> ... -> min_j -> j.
+            # This requires: i <= max_i AND min_j <= j internally, plus a path in Q.
+            if f_i in Q_tc and f_j in Q_tc[f_i]:
+                # OperadicGPAV adds edges from ALL maxs of parent to ALL mins of child.
+                # So if `i` is less than ANY max of its fiber, and `j` is greater than ANY min of its fiber,
+                # there is a valid path.
+                
+                # Check i <= *some* max of its own fiber
+                i_can_reach_max = False
+                for m_i in fiber_maxs[f_i]:
+                    if np.all(X_ref[i] <= X_ref[m_i]):
+                        i_can_reach_max = True
+                        break
+                        
+                # Check *some* min of j's fiber <= j
+                min_can_reach_j = False
+                for m_j in fiber_mins[f_j]:
+                    if np.all(X_ref[m_j] <= X_ref[j]):
+                        min_can_reach_j = True
+                        break
+                        
+                return bool(i_can_reach_max and min_can_reach_j)
+                
+            return False
+
 
         # --------------------------------------------------------
         # 2. Build truth/noisy response from fibers only
@@ -293,6 +371,8 @@ def run_one_trial(
         if verbose:
             print("\nRunning OperadicGPAV...")
 
+        tracemalloc.start()
+        rss_before_og = _proc.memory_info().rss
         t0 = time.perf_counter()
         u_ogpav = OperadicGPAV(
             Q=Q,
@@ -309,6 +389,14 @@ def run_one_trial(
             temp_dir=None,
         )
         t_ogpav = time.perf_counter() - t0
+        _, peak_og = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        
+        rss_after_og = _proc.memory_info().rss
+        mem_og_mb = peak_og / 1024 / 1024
+        rss_og_mb = (rss_after_og - rss_before_og) / 1024 / 1024
+
+        obj_ogpav = float(np.sum((np.asarray(u_ogpav, dtype=float) - np.asarray(y_noisy, dtype=float)) ** 2))
 
         ogpav_metrics = compute_metrics(y_true, u_ogpav)
 
@@ -347,21 +435,73 @@ def run_one_trial(
         if verbose:
             print("\nRunning sb_gpav...")
 
+        tracemalloc.start()
+        rss_before_sb = _proc.memory_info().rss
         t0 = time.perf_counter()
         u_sb = sb_gpav(
             X=X,
             Y=y_noisy,
             L=L,
-            f=None,  # default comparator = coordinate-wise <=
+            f=None,  # ignore value comparator
             weights=None,
             n_segments=n_segments,
             assume_component_wise=True,
             verbose=False,
             debug=False,
+            f_idx=lambda i, j: check_ogpav_precedence(i, j, X),  # use index-aware comparator
         )
         t_sb = time.perf_counter() - t0
+        _, peak_sb = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        
+        rss_after_sb = _proc.memory_info().rss
+        mem_sb_mb = peak_sb / 1024 / 1024
+        rss_sb_mb = (rss_after_sb - rss_before_sb) / 1024 / 1024
+        
+        obj_sb = float(np.sum((np.asarray(u_sb, dtype=float) - np.asarray(y_noisy, dtype=float)) ** 2))
 
         sb_metrics = compute_metrics(y_true, u_sb)
+
+        # --------------------------------------------------------
+        # 6. Run Original PGPAV IF N <= 15000 (q <= 100) to avoid OOM
+        # --------------------------------------------------------
+        if q <= 100:
+            if verbose:
+                print("\nBuilding Hasse and running PGPAV for dev comparison...")
+            t0 = time.perf_counter()
+            
+            # Use incremental builder with our custom checker
+            from utils.trend_following import _build_dag_incrementally
+            
+            # Lambda wraps our function since _build_dag expects (i,j)
+            def _pgpav_checker(i: int, j: int) -> bool:
+                 return check_ogpav_precedence(i, j, X)
+                 
+            H_full_induced = _build_dag_incrementally(L, _pgpav_checker, assume_component_wise=True)
+
+            u_pgpav_raw, _, _, _ = gpav_op(
+                Y=y_noisy,
+                poset=H_full_induced,
+                topo_order=L,
+                weights=None,
+                verbose=False,
+                name="PGPAV",
+                return_block_edges=False,
+            )
+            t_pgpav = time.perf_counter() - t0
+            
+            # gpav_op returns `u` aligned to `list(H.nodes())`.
+            # the nodes of H_full_induced are indices in X (0..N-1).
+            # We must map them back to standard array order buffer.
+            nodes_pgpav = list(H_full_induced.nodes())
+            u_pgpav = np.zeros(total_n, dtype=float)
+            for i, node_idx in enumerate(nodes_pgpav):
+                u_pgpav[node_idx] = u_pgpav_raw[i]
+
+            obj_pgpav = float(np.sum((np.asarray(u_pgpav, dtype=float) - np.asarray(y_noisy, dtype=float)) ** 2))
+        else:
+            t_pgpav = np.nan
+            obj_pgpav = np.nan
 
         result = {
             "config": {
@@ -393,6 +533,20 @@ def run_one_trial(
                 "build_full_X": t_build_X,
                 "operadic_gpav": t_ogpav,
                 "sb_gpav": t_sb,
+                "pgpav": t_pgpav,
+            },
+            "memory_mb": {
+                "operadic_gpav": mem_og_mb,
+                "sb_gpav": mem_sb_mb,
+            },
+            "rss_delta_mb": {
+                "operadic_gpav": rss_og_mb,
+                "sb_gpav": rss_sb_mb,
+            },
+            "objective": {
+                "operadic_gpav": obj_ogpav,
+                "sb_gpav": obj_sb,
+                "pgpav": obj_pgpav,
             },
             "baseline_noisy_vs_truth": baseline_metrics,
             "operadic_vs_truth": ogpav_metrics,
@@ -478,6 +632,9 @@ def summarize_results(results: List[Dict[str, object]]) -> Dict[str, object]:
         "operadic_vs_truth": {},
         "segmented_vs_truth": {},
         "timings_sec": {},
+        "memory_mb": {},
+        "rss_delta_mb": {},
+        "objective": {},
     }
 
     for metric in ["mse", "rmse", "mae", "max_abs"]:
@@ -506,6 +663,14 @@ def summarize_results(results: List[Dict[str, object]]) -> Dict[str, object]:
             "std": float(np.std(arr, ddof=0)),
         }
 
+    for top_key in ("memory_mb", "rss_delta_mb", "objective"):
+        for metric in ["operadic_gpav", "sb_gpav"]:
+            arr = collect(top_key, metric)
+            summary[top_key][metric] = {
+                "mean": float(np.mean(arr)),
+                "std": float(np.std(arr, ddof=0)),
+            }
+
     # Improvement over raw noisy signal
     base_mse = np.array([r["baseline_noisy_vs_truth"]["mse"] for r in results], dtype=float)
     og_mse = np.array([r["operadic_vs_truth"]["mse"] for r in results], dtype=float)
@@ -514,6 +679,36 @@ def summarize_results(results: List[Dict[str, object]]) -> Dict[str, object]:
     summary["mse_improvement_fraction"] = {
         "operadic_over_noisy_mean": float(np.mean((base_mse - og_mse) / base_mse)),
         "segmented_over_noisy_mean": float(np.mean((base_mse - sb_mse) / base_mse)),
+    }
+
+    # objective deviations (dev = (obj_SB - obj_PGPAV) / obj_PGPAV * 100)
+    # dev2 = (obj_OGPAV - obj_PGPAV) / obj_PGPAV * 100
+    og_obj = np.array([r["objective"]["operadic_gpav"] for r in results], dtype=float)
+    sb_obj = np.array([r["objective"]["sb_gpav"] for r in results], dtype=float)
+    pg_obj = np.array([r["objective"]["pgpav"] for r in results], dtype=float)
+    
+    # safeguard division
+    pg_obj_safe = np.maximum(pg_obj, 1e-12)
+    devs = (sb_obj - pg_obj) / pg_obj_safe * 100.0
+    devs2 = (og_obj - pg_obj) / pg_obj_safe * 100.0
+
+    # Handles the nan case if q > 100
+    if np.isnan(devs).all():
+        dev_mean, dev_std = np.nan, np.nan
+        dev2_mean, dev2_std = np.nan, np.nan
+    else:
+        dev_mean = float(np.nanmean(devs))
+        dev_std  = float(np.nanstd(devs, ddof=0))
+        dev2_mean = float(np.nanmean(devs2))
+        dev2_std  = float(np.nanstd(devs2, ddof=0))
+
+    summary["dev_percent"] = {
+        "mean": dev_mean,
+        "std":  dev_std,
+    }
+    summary["dev2_percent"] = {
+        "mean": dev2_mean,
+        "std":  dev2_std,
     }
 
     return summary
@@ -558,9 +753,16 @@ if __name__ == "__main__":
     import gc
     import os
     import traceback
+    import argparse
 
     import matplotlib.pyplot as plt
     import numpy as np
+
+    parser = argparse.ArgumentParser(description="Run complete OperadicGPAV vs SB-GPAV comparison.")
+    parser.add_argument("--model", type=str, default=None,
+                        help="Which slope config to run (linear_low, linear_mix, linear_high). "
+                             "If omitted, runs all three.")
+    args = parser.parse_args()
 
     # ------------------------------------------------------------------
     # Configuration
@@ -573,17 +775,34 @@ if __name__ == "__main__":
         {"model": "linear_high", "label": "high (α=2.0, 2.0)"},
     ]
 
-    # Medium-scale: up to what sb_gpav can handle
-    q_values = [10, 100, 1_000, 10_000]
+    if args.model:
+        SLOPE_CONFIGS = [sc for sc in SLOPE_CONFIGS if sc["model"] == args.model]
+        if not SLOPE_CONFIGS:
+            raise ValueError(f"Unknown model {args.model!r}. Choose from linear_low, linear_mix, linear_high.")
+
+    # Medium-scale: size points chosen to test SB-GPAV limits
+    # SB-GPAV crashed in the paper at N=500,000. 
+    # q=30   -> N~900
+    # q=100  -> N~10,000
+    # q=316  -> N~100,000
+    # q=1000 -> N~1,000,000 (Expected to OOM SB-GPAV)
+    q_values = [30, 100, 316, 1000]
     R_values = [q * q for q in q_values]
 
-    max_allowed_seconds = None  # set e.g. 600 to auto-stop
+    # Auto-stop after a certain time, or None defaults to off.
+    max_allowed_seconds = None
+
+    import multiprocessing
+    n_cpus      = multiprocessing.cpu_count()
+    max_workers = max(1, n_cpus)
+    print(f"Detected {n_cpus} CPU(s) → using max_workers={max_workers}")
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
     def save_progress(rows, failures, out_csv, out_json):
         """Save CSV and JSON after every successful or failed experiment."""
+        import json, csv
         if rows:
             fieldnames = list(rows[0].keys())
             with open(out_csv, "w", newline="", encoding="utf-8") as f:
@@ -592,7 +811,6 @@ if __name__ == "__main__":
                 writer.writerows(rows)
         with open(out_json, "w", encoding="utf-8") as f:
             json.dump({"results": rows, "failures": failures}, f, indent=2)
-
     def make_plots_from_rows(rows):
         """Create plots from already-saved rows."""
         if not rows:
@@ -735,6 +953,8 @@ if __name__ == "__main__":
                 realized_N       = [int(r["sizes"]["N"]) for r in results]
                 realized_Q_edges = [int(r["sizes"]["Q_num_edges"]) for r in results]
 
+                N_actual_mean = float(np.mean(realized_N))
+
                 row = {
                     "slope_config": model_key,
                     "R_target":     int(R),
@@ -744,56 +964,63 @@ if __name__ == "__main__":
                     "noise_scale":  noise_scale,
                     "n_segments":   int(n_segments),
 
-                "N_actual_mean": float(np.mean(realized_N)),
-                "N_actual_std": float(np.std(realized_N, ddof=0)),
-                "Q_edges_mean": float(np.mean(realized_Q_edges)),
-                "Q_edges_std": float(np.std(realized_Q_edges, ddof=0)),
+                    "N_actual_mean": N_actual_mean,
+                    "N_actual_std": float(np.std(realized_N, ddof=0)),
+                    "Q_edges_mean": float(np.mean(realized_Q_edges)),
+                    "Q_edges_std": float(np.std(realized_Q_edges, ddof=0)),
 
-                "build_full_X_mean": float(summary["timings_sec"]["build_full_X"]["mean"]),
-                "build_full_X_std": float(summary["timings_sec"]["build_full_X"]["std"]),
-                "operadic_time_mean": float(summary["timings_sec"]["operadic_gpav"]["mean"]),
-                "operadic_time_std": float(summary["timings_sec"]["operadic_gpav"]["std"]),
-                "sb_time_mean": float(summary["timings_sec"]["sb_gpav"]["mean"]),
-                "sb_time_std": float(summary["timings_sec"]["sb_gpav"]["std"]),
+                    "build_full_X_mean": float(summary["timings_sec"]["build_full_X"]["mean"]),
+                    "build_full_X_std": float(summary["timings_sec"]["build_full_X"]["std"]),
+                    "operadic_time_mean": float(summary["timings_sec"]["operadic_gpav"]["mean"]),
+                    "operadic_time_std": float(summary["timings_sec"]["operadic_gpav"]["std"]),
+                    "sb_time_mean": float(summary["timings_sec"]["sb_gpav"]["mean"]),
+                    "sb_time_std": float(summary["timings_sec"]["sb_gpav"]["std"]),
 
-                "baseline_rmse_mean": float(summary["baseline_noisy_vs_truth"]["rmse"]["mean"]),
-                "baseline_rmse_std": float(summary["baseline_noisy_vs_truth"]["rmse"]["std"]),
-                "operadic_rmse_mean": float(summary["operadic_vs_truth"]["rmse"]["mean"]),
-                "operadic_rmse_std": float(summary["operadic_vs_truth"]["rmse"]["std"]),
-                "sb_rmse_mean": float(summary["segmented_vs_truth"]["rmse"]["mean"]),
-                "sb_rmse_std": float(summary["segmented_vs_truth"]["rmse"]["std"]),
+                    "operadic_mem_mb_mean": float(summary["memory_mb"]["operadic_gpav"]["mean"]),
+                    "operadic_mem_mb_std":  float(summary["memory_mb"]["operadic_gpav"]["std"]),
+                    "sb_mem_mb_mean":       float(summary["memory_mb"]["sb_gpav"]["mean"]),
+                    "sb_mem_mb_std":        float(summary["memory_mb"]["sb_gpav"]["std"]),
 
-                "baseline_mse_mean": float(summary["baseline_noisy_vs_truth"]["mse"]["mean"]),
-                "baseline_mse_std": float(summary["baseline_noisy_vs_truth"]["mse"]["std"]),
-                "operadic_mse_mean": float(summary["operadic_vs_truth"]["mse"]["mean"]),
-                "operadic_mse_std": float(summary["operadic_vs_truth"]["mse"]["std"]),
-                "sb_mse_mean": float(summary["segmented_vs_truth"]["mse"]["mean"]),
-                "sb_mse_std": float(summary["segmented_vs_truth"]["mse"]["std"]),
+                    "operadic_rss_mb_mean": float(summary["rss_delta_mb"]["operadic_gpav"]["mean"]),
+                    "operadic_rss_mb_std":  float(summary["rss_delta_mb"]["operadic_gpav"]["std"]),
+                    "sb_rss_mb_mean":       float(summary["rss_delta_mb"]["sb_gpav"]["mean"]),
+                    "sb_rss_mb_std":        float(summary["rss_delta_mb"]["sb_gpav"]["std"]),
 
-                "baseline_mae_mean": float(summary["baseline_noisy_vs_truth"]["mae"]["mean"]),
-                "baseline_mae_std": float(summary["baseline_noisy_vs_truth"]["mae"]["std"]),
-                "operadic_mae_mean": float(summary["operadic_vs_truth"]["mae"]["mean"]),
-                "operadic_mae_std": float(summary["operadic_vs_truth"]["mae"]["std"]),
-                "sb_mae_mean": float(summary["segmented_vs_truth"]["mae"]["mean"]),
-                "sb_mae_std": float(summary["segmented_vs_truth"]["mae"]["std"]),
+                    "operadic_obj_mean": float(summary["objective"]["operadic_gpav"]["mean"]),
+                    "operadic_obj_std":  float(summary["objective"]["operadic_gpav"]["std"]),
+                    "sb_obj_mean":       float(summary["objective"]["sb_gpav"]["mean"]),
+                    "sb_obj_std":        float(summary["objective"]["sb_gpav"]["std"]),
 
-                "baseline_max_abs_mean": float(summary["baseline_noisy_vs_truth"]["max_abs"]["mean"]),
-                "baseline_max_abs_std": float(summary["baseline_noisy_vs_truth"]["max_abs"]["std"]),
-                "operadic_max_abs_mean": float(summary["operadic_vs_truth"]["max_abs"]["mean"]),
-                "operadic_max_abs_std": float(summary["operadic_vs_truth"]["max_abs"]["std"]),
-                "sb_max_abs_mean": float(summary["segmented_vs_truth"]["max_abs"]["mean"]),
-                "sb_max_abs_std": float(summary["segmented_vs_truth"]["max_abs"]["std"]),
-            }
+                    "dev_percent_mean": float(summary["dev_percent"]["mean"]),
+                    "dev_percent_std":  float(summary["dev_percent"]["std"]),
+
+                    "dev2_percent_mean": float(summary["dev2_percent"]["mean"]),
+                    "dev2_percent_std":  float(summary["dev2_percent"]["std"]),
+
+                    "baseline_rmse_mean": float(summary["baseline_noisy_vs_truth"]["rmse"]["mean"]),
+                    "operadic_rmse_mean": float(summary["operadic_vs_truth"]["rmse"]["mean"]),
+                    "operadic_rmse_std": float(summary["operadic_vs_truth"]["rmse"]["std"]),
+                    "sb_rmse_mean": float(summary["segmented_vs_truth"]["rmse"]["mean"]),
+                    "sb_rmse_std": float(summary["segmented_vs_truth"]["rmse"]["std"]),
+                    
+                    # --- Normalised metrics (should be ~constant across q) ---
+                    "obj_normalised_og": float(summary["objective"]["operadic_gpav"]["mean"]
+                                               / max(N_actual_mean * noise_scale**2, 1e-12)),
+                    "obj_normalised_sb": float(summary["objective"]["sb_gpav"]["mean"]
+                                               / max(N_actual_mean * noise_scale**2, 1e-12)),
+                    "rmse_normalised_og": float(summary["operadic_vs_truth"]["rmse"]["mean"] / max(noise_scale, 1e-12)),
+                    "rmse_normalised_sb": float(summary["segmented_vs_truth"]["rmse"]["mean"] / max(noise_scale, 1e-12)),
+                    "baseline_rmse_normalised": float(summary["baseline_noisy_vs_truth"]["rmse"]["mean"] / max(noise_scale, 1e-12)),
+                }
 
                 rows.append(row)
                 save_progress(rows, failures, out_csv, out_json)
 
                 print(
-                    f"  Done R={R} | N={row['N_actual_mean']:.0f} | "
-                    f"Operadic={row['operadic_time_mean']:.3f}s | "
-                    f"SB={row['sb_time_mean']:.3f}s | "
-                    f"Operadic RMSE={row['operadic_rmse_mean']:.4g} | "
-                    f"SB RMSE={row['sb_rmse_mean']:.4g}"
+                    f"  Done R={R:,} | N={row['N_actual_mean']:,.0f} | "
+                    f"Time: OG={row['operadic_time_mean']:.3f}s, SB={row['sb_time_mean']:.3f}s | "
+                    f"RSS: OG={row['operadic_rss_mb_mean']:.1f}MB, SB={row['sb_rss_mb_mean']:.1f}MB | "
+                    f"dev(SB/PG)={row['dev_percent_mean']:.3f}%, dev2(OG/PG)={row['dev2_percent_mean']:.3f}%"
                 )
 
                 if max_allowed_seconds is not None and (
@@ -863,10 +1090,16 @@ if __name__ == "__main__":
                    "OperadicGPAV time (s)", "time_ogpav_vs_R.png", logy=True)
         slope_plot("sb_time_mean",       "sb_time_std",
                    "SB-GPAV time (s)",     "time_sb_vs_R.png",    logy=True)
-        slope_plot("operadic_rmse_mean", "operadic_rmse_std",
-                   "OperadicGPAV RMSE",    "rmse_ogpav_vs_R.png")
-        slope_plot("sb_rmse_mean",       "sb_rmse_std",
-                   "SB-GPAV RMSE",         "rmse_sb_vs_R.png")
+        slope_plot("operadic_rss_mb_mean", "operadic_rss_mb_std",
+                   "OperadicGPAV Memory RSS (MB)", "mem_rss_ogpav_vs_R.png", logy=True)
+        slope_plot("sb_rss_mb_mean", "sb_rss_mb_std",
+                   "SB-GPAV Memory RSS (MB)", "mem_rss_sb_vs_R.png", logy=True)
+        slope_plot("rmse_normalised_og", "operadic_rmse_std",
+                   "OperadicGPAV norm RMSE",    "norm_rmse_ogpav_vs_R.png")
+        slope_plot("rmse_normalised_sb", "sb_rmse_std",
+                   "SB-GPAV norm RMSE",         "norm_rmse_sb_vs_R.png")
+        slope_plot("dev_percent_mean", "dev_percent_std",
+                   "Deviation SB vs PGPAV (%)", "dev_vs_R.png")
     except Exception as e:
         print(f"Could not generate plots: {e}")
 

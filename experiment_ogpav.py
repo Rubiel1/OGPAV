@@ -86,7 +86,7 @@ def ensure_q_nodes_match_num_fibers(Q: nx.DiGraph, m: int) -> nx.DiGraph:
 
 def run_one_trial(
     *,
-    q: int,
+    R_target: int,
     fiber_count_dist: str = "poisson",
     model: str = "linear_high",
     noise: str = "normal",
@@ -98,17 +98,36 @@ def run_one_trial(
     use_trend_following_blocks: bool = False,
     verbose: bool = False,
 ) -> Dict[str, object]:
-    params = make_dataset_params(q)
-    nQ    = params["nQ"]
-    avg_R = params["avg_R"]
+    
+    # R_target = nQ * avg_R
+    # nQ ~ R^(1/3), avg_R ~ R^(2/3)
+    nQ = max(1, int(round(R_target ** (1./3.))))
+    avg_R = max(1, int(round(R_target ** (2./3.))))
+    
+    # Base radius and spacing tightly around avg_R so disks physically fit all points
+    from utils.geometric_sb_dataset import make_dataset_params, generate_dataset_lazy
+    params = make_dataset_params(avg_R)
+    params["nQ"] = nQ
+    params["avg_R"] = avg_R
+    
+    # We must expand the bounding box to fit nQ centers with these large radii
+    required_grid_span = params["center_grid_step"] * int(math.ceil(math.sqrt(nQ)))
+    params["square_max"] = max(params["square_max"], required_grid_span * 2)
 
     try:
         if verbose:
-            print(f"    Generating q={q} (nQ={nQ}, avg_R={avg_R}, "
+            print(f"    Generating R={R_target} (nQ={nQ}, avg_R={avg_R}, "
                   f"noise_scale={noise_scale:.0f}, seed={data_seed}) ...")
 
-        data = generate_standard(q, seed=data_seed,
-                                 fiber_count_dist=fiber_count_dist, lazy=True)
+        # Extract only the parameters needed for geometry generation
+        geom = {k: v for k, v in params.items() if k not in ("noise_scale",)}
+
+        data = generate_dataset_lazy(
+            **geom,
+            seed=data_seed,
+            fiber_count_dist=fiber_count_dist,
+            cache_dir=None
+        )
 
         R_datasets = data["R_points_list"]
         Q = ensure_q_nodes_match_num_fibers(data["Q_hasse"], len(R_datasets))
@@ -155,7 +174,7 @@ def run_one_trial(
 
         return {
             "config": {
-                "q": q,
+                "R_target": R_target,
                 "nQ": nQ,
                 "avg_R": avg_R,
                 "radius": params["radius"],
@@ -199,8 +218,8 @@ def run_one_trial(
 
 def run_repeated_experiment(
     *,
-    n_trials: int = 3,
-    q: int,
+    n_trials: int = 1,
+    R_target: int,
     fiber_count_dist: str = "poisson",
     model: str = "linear_high",
     noise: str = "normal",
@@ -213,7 +232,7 @@ def run_repeated_experiment(
 ) -> List[Dict[str, object]]:
     return [
         run_one_trial(
-            q=q,
+            R_target=R_target,
             fiber_count_dist=fiber_count_dist,
             model=model,
             noise=noise,
@@ -278,13 +297,21 @@ if __name__ == "__main__":
         if not SLOPE_CONFIGS:
             raise ValueError(f"Unknown model {args.model!r}. Choose from linear_low, linear_mix, linear_high.")
 
-    q_values = [
-        100,      # R ~     10 000
-        1_000,    # R ~  1 000 000
-        10_000,   # R ~ 10^8
-        100_000,  # R ~ 10^10  (run only if hardware allows)
+    R_values = [
+        100,
+        10_000,         # nQ ~ 21, avg_R ~ 464
+        1_000_000,      # nQ ~ 100, avg_R ~ 10000
+        49_000_000,     # nQ ~ 365, avg_R ~ 133886
+        100_000_000,    # nQ ~ 464, avg_R ~ 215443
+        4_900_000_000,
+        10_000_000_000, 
+        490_000_000_000,
+        1_000_000_000_000,
+        49_000_000_000_000,
+        100_000_000_000_000,
+        4_900_000_000_000_000,
+        10_000_000_000_000_000,
     ]
-    R_values = [q * q for q in q_values]
 
     # Auto-stop if any size's average trial time exceeds this (seconds).
     # NOTE: the check happens AFTER a full trial completes — it cannot
@@ -340,31 +367,34 @@ if __name__ == "__main__":
 
         stop_slope = False
 
-        for q, R in zip(q_values, R_values):
+        for R in R_values:
             if stop_slope:
                 break
             if R in completed_R:
                 print(f"  Skipping already completed R={R:,}")
                 continue
+                
+            nQ = max(1, int(round(R ** (1./3.))))
+            avg_R = max(1, int(round(R ** (2./3.))))
 
-            _p          = make_dataset_params(q)
-            noise_scale = _p["noise_scale"]   # float(q): signal ∝ q → noise ∝ q keeps SNR constant
+            # Keep noise linearly scaling with the average spread of values
+            noise_scale = float(avg_R)
 
             print(f"\n  {'='*66}")
             print(
-                f"  R={R:,}  q={q}  nQ={_p['nQ']}  avg_R={_p['avg_R']}  "
+                f"  R={R:,}  nQ={nQ}  avg_R={avg_R}  "
                 f"noise_scale={noise_scale:.0f}  model={model_key}"
             )
 
             try:
                 results = run_repeated_experiment(
-                    n_trials=3,
-                    q=q,
+                    n_trials=1,
+                    R_target=R,
                     fiber_count_dist="poisson",
                     model=model_key,
                     noise="normal",
                     noise_scale=noise_scale,
-                    base_seed=2026 + q,
+                    base_seed=2026 + nQ,
                     max_workers=max_workers,
                     use_trend_following_first=False,
                     use_trend_following_blocks=False,
@@ -385,9 +415,8 @@ if __name__ == "__main__":
                 row = {
                     "slope_config":         model_key,
                     "R_target":             int(R),
-                    "sqrt_R":               int(q),
-                    "nQ_input":             int(_p["nQ"]),
-                    "avg_R_input":          int(_p["avg_R"]),
+                    "nQ_input":             nQ,
+                    "avg_R_input":          avg_R,
                     "noise_scale":          noise_scale,
                     "N_actual_mean":        N_actual_mean,
                     "N_actual_std":         float(np.std(realized_N, ddof=0)),
@@ -439,9 +468,8 @@ if __name__ == "__main__":
                 failures.append({
                     "slope_config":  model_key,
                     "R_target":      int(R),
-                    "sqrt_R":        int(q),
-                    "nQ_input":      int(_p["nQ"]),
-                    "avg_R_input":   int(_p["avg_R"]),
+                    "nQ":            nQ,
+                    "avg_R":         avg_R,
                     "error":         str(e),
                     "traceback":     traceback.format_exc(),
                 })
