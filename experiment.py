@@ -268,8 +268,30 @@ def run_one_trial(
         print("fiber lengths:", R_datasets.get_fiber_lengths())
 
         # --------------------------------------------------------
-        # 1.5. Build Custom Comparator for SB-GPAV and PGPAV
+        # 1.5. Build full X, Y, and Comparators
         # --------------------------------------------------------
+        lengths = R_datasets.get_fiber_lengths()
+        total_n = int(sum(lengths))
+        if verbose:
+            print(f"Number of fibers: {m}")
+            print(f"Total sample size N: {total_n}")
+
+        t0_build = time.perf_counter()
+        L = topological_order_from_lazy_fibers(R_datasets)
+        X, lengths_check, indices_list = build_full_X_from_lazy(R_datasets)
+        t_build_X = time.perf_counter() - t0_build
+
+        y_true = make_y_true_from_fibers(R_datasets, model=model)
+        eps = make_noise(
+            total_n,
+            noise=noise,
+            noise_scale=noise_scale,
+            seed=noise_seed,
+        )
+        y_noisy = y_true + eps
+        baseline_metrics = compute_metrics(y_true, y_noisy)
+
+        # Build Custom Comparator for SB-GPAV and PGPAV
         # To prove exactness, we must constrain the full array-based algorithms
         # to the exact macroscopic topological shape that OperadicGPAV operates on.
         Q_tc = nx.transitive_closure(Q)
@@ -342,31 +364,11 @@ def run_one_trial(
             return False
 
 
-        # --------------------------------------------------------
-        # 2. Build truth/noisy response from fibers only
-        # --------------------------------------------------------
-        lengths = R_datasets.get_fiber_lengths()
-        total_n = int(sum(lengths))
-        if verbose:
-            print(f"Number of fibers: {m}")
-            print(f"Total sample size N: {total_n}")
-
-        y_true = make_y_true_from_fibers(R_datasets, model=model)
-        eps = make_noise(
-            total_n,
-            noise=noise,
-            noise_scale=noise_scale,
-            seed=noise_seed,
-        )
-        y_noisy = y_true + eps
-
-        baseline_metrics = compute_metrics(y_true, y_noisy)
-
         print("len(y_true):", len(y_true))
         print("len(y_noisy):", len(y_noisy))
 
         # --------------------------------------------------------
-        # 3. Run OperadicGPAV directly on lazy fibers
+        # 2. Run OperadicGPAV directly on lazy fibers
         # --------------------------------------------------------
         if verbose:
             print("\nRunning OperadicGPAV...")
@@ -400,26 +402,12 @@ def run_one_trial(
 
         ogpav_metrics = compute_metrics(y_true, u_ogpav)
 
-        # --------------------------------------------------------
-        # 4. Build full X ONCE for sb_gpav
-        # --------------------------------------------------------
-        if verbose:
-            print("\nBuilding full X for sb_gpav (without building global poset)...")
-
-        t0 = time.perf_counter()
-        L = topological_order_from_lazy_fibers(R_datasets)
-
-        # only build X AFTER the order is known
-        X, lengths_check, indices_list = build_full_X_from_lazy(R_datasets)
-        #X, lengths_check, indices_list = build_full_X_from_lazy(R_datasets)
-        t_build_X = time.perf_counter() - t0
-
         if lengths != lengths_check:
             raise RuntimeError("Fiber lengths changed unexpectedly while building X")
 
-        # One valid topological order under coordinate-wise <=
-        #L = topological_order_from_coordinates(X)
-
+        # --------------------------------------------------------
+        # 3. Setup and Run sb_gpav
+        # --------------------------------------------------------
         # Choose number of segments if not supplied
         # Paper suggests segment size around 2000; translate that into n_segments.
         if n_segments is None:
@@ -479,8 +467,13 @@ def run_one_trial(
                  
             H_full_induced = _build_dag_incrementally(L, _pgpav_checker, assume_component_wise=True)
 
+            # PGPAV expects Y to be aligned with list(H_full_induced.nodes()). 
+            # Since the nodes were added in L order, passing a flat array scrambles the data.
+            # We MUST pass Y as a dictionary mapping node_idx -> value.
+            y_noisy_dict = {i: float(y_noisy[i]) for i in range(total_n)}
+
             u_pgpav_raw, _, _, _ = gpav_op(
-                Y=y_noisy,
+                Y=y_noisy_dict,
                 poset=H_full_induced,
                 topo_order=L,
                 weights=None,
