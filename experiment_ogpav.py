@@ -72,12 +72,23 @@ def make_y_true_from_fibers(R_datasets, *, model: str = "linear_high") -> np.nda
 
 def ensure_q_nodes_match_num_fibers(Q: nx.DiGraph, m: int) -> nx.DiGraph:
     q_nodes = list(Q.nodes())
-    if set(q_nodes) == set(range(m)):
+    expected_list = list(range(m))
+    if q_nodes == expected_list:
         return Q
-    if len(q_nodes) != m:
-        raise ValueError(f"Q has {len(q_nodes)} nodes but {m} fibers.")
-    mapping = {old: new for new, old in enumerate(sorted(q_nodes))}
-    return nx.relabel_nodes(Q, mapping, copy=True)
+        
+    actual = set(q_nodes)
+    if len(actual) != m:
+        raise ValueError(f"Q has {len(actual)} nodes but {m} fibers.")
+        
+    sorted_old = sorted(list(actual))
+    mapping = {old: new for new, old in enumerate(sorted_old)}
+    
+    Q_new = nx.DiGraph()
+    Q_new.add_nodes_from(expected_list)
+    for u, v in Q.edges():
+        Q_new.add_edge(mapping[u], mapping[v])
+        
+    return Q_new
 
 
 # ============================================================

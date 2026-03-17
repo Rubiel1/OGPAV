@@ -185,21 +185,28 @@ def ensure_q_nodes_match_num_fibers(Q: nx.DiGraph, m: int) -> nx.DiGraph:
     Make sure Q uses nodes {0,1,...,m-1}. If needed, relabel.
     """
     q_nodes = list(Q.nodes())
-    expected = set(range(m))
-    actual = set(q_nodes)
+    expected_list = list(range(m))
 
-    if actual == expected:
+    if q_nodes == expected_list:
         return Q
 
+    actual = set(q_nodes)
     if len(actual) != m:
         raise ValueError(
             f"Q has {len(actual)} nodes but there are {m} fibers. "
             f"Q nodes: {sorted(actual)}"
         )
 
-    # Deterministic relabeling by sorted order
-    mapping = {old: new for new, old in enumerate(sorted(q_nodes))}
-    return nx.relabel_nodes(Q, mapping, copy=True)
+    # Deterministic relabeling AND strict insertion order
+    sorted_old = sorted(list(actual))
+    mapping = {old: new for new, old in enumerate(sorted_old)}
+    
+    Q_new = nx.DiGraph()
+    Q_new.add_nodes_from(expected_list) # Forces nodes to iterate as 0, 1, ... m-1
+    for u, v in Q.edges():
+        Q_new.add_edge(mapping[u], mapping[v])
+        
+    return Q_new
 
 def topological_order_from_lazy_fibers(R_datasets):
     sums = []
