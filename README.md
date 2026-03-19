@@ -10,9 +10,10 @@ Burdakov, Grimvall, Sysoev (2006)
 and Segmentation-Based GPAV (SB-GPAV) — from
 Sysoev, Burdakov, Grimvall (2011)
 “A segmentation based algorithm for large scale partially ordered monotonic regression”
+If the data was aggregated across multiple administrative levels e.g. regional and federal statistics, one can construct a poset Q representing the relationship between states at the federal level. Each node of this poset represent a region. We use the Q poset to reduce the complexity of the algorithm SB-GPAV. 
 
-Assuming the data has extra structure, we use the extra information to reduce the complexity of the algorithm.
-The first stage of the algorithm is also ready to run in parallel.
+This allows the most expensive steps of the SB-GPAV to be performed locally on the regional input rather than on the global input. Moreover, the full dataset is never loaded and certain computations can be simplified using the underlying structure.
+The first stage of OGPAV is also ready to run in parallel.
 
 ## Installation
 
