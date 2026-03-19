@@ -23,7 +23,8 @@ Requirements:
 - numpy >= 2.0.2
 - networkx >= 2.8.8
 - hasse >= 0.2.0
-
+- python >= 3.9
+- matplotlib 
 ## Running examples on Linux and macOS
 
 All example scripts that use `max_workers > 1` should be run through a `main()` function protected by:
@@ -273,10 +274,6 @@ if __name__ == "__main__":
 Run tests from the project root:
 
 ```bash
-python -m tests.gpav_test
-```
-### Test can be run with 
-```
 python -m tests.gpav_test
 ```
 

@@ -1,3 +1,4 @@
 numpy >= 2.0.2
 networkx >= 2.8.8
 hasse >= 0.2.0
+matplotlib
