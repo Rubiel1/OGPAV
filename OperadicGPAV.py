@@ -2,8 +2,7 @@
 """
 OperadicGPAV.py
 
-Implements the "Operadic" case of SB-GPAV algorithm for the 
-lexicographic sum P = Q(R_1, ..., R_m).
+Implements the "Operadic" case of SB-GPAV algorithm for the lexicographic sum P = Q(R_1, ..., R_m).
 
 This module provides a high-level interface `OperadicGPAV` that accepts:
   - Q: The outer poset (NetworkX DiGraph).
@@ -84,7 +83,7 @@ def create_lexicographic_mapping(R_datasets: Any) -> List[List[GlobalIndex]]:
 
 
 # ---------------------------------------------------------------------
-# Worker Function (Must be top-level for multiprocessing)
+# Worker Function
 # ---------------------------------------------------------------------
 
 def _process_fiber_task(
@@ -155,8 +154,6 @@ def _process_fiber_task(
         def check_block_prec(bi, bj):
             return _block_precedes(block_extrema[bi][0], block_extrema[bj][1], X_i, f)
         
-        # We can safely use assume_component_wise=False now to do full O(N^2) 
-        # cycle verification because the true blocks are guaranteed structurally sound!
         G_loc = _build_dag_incrementally(list(range(len(blocks))), check_block_prec)
         
         mins = [n for n in G_loc.nodes() if G_loc.in_degree(n) == 0]
