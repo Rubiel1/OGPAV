@@ -241,7 +241,7 @@ def gpav_seg(
 
 
             # Remove merged block B_j-
-            del blocks[j]  # but other blocks can make reference to this deleted one
+            del blocks[j]
 
             if verbose:
                 _print_blocks_state(blocks, N, indent=indent + "    ")
@@ -306,7 +306,7 @@ def gpav_op(
         1D array-like or dict keyed by poset node labels. The values to be
         isotonic-regressed.
         The input data `Y` is a mapping from poset node labels to values.
-        You may pass this either as:
+        This can be passed either as:
           - a dictionary `{label -> value}` keyed by the node labels of `poset`.
 
           - a 1D NumPy array (or array-like) already aligned with the internal
