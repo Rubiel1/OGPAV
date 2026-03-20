@@ -1,7 +1,7 @@
 # OGPAV
 OGPAV is an operadic version of GPAV for data with topological information.
 
-![Tests](https://github.com/Rubiel1/OGPAV/actions/workflows/python-package.yml/badge.svg?branch=master)
+![Tests](https://github.com/Rubiel1/OGPAV/actions/workflows/python-package.yml/badge.svg?branch=main)
 
 Based on GPAV — from
 Burdakov, Grimvall, Sysoev (2006)
