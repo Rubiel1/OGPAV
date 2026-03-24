@@ -462,10 +462,7 @@ def generate_dataset_lazy(
     Global X and P_hasse are NOT built to save memory.
     """
     if cache_dir is None:
-        
-        tmp_obj = tempfile.TemporaryDirectory(prefix="ogpav_cache_")
-        cache_dir = tmp_obj.name
-        
+        cache_dir = tempfile.mkdtemp(prefix="ogpav_cache_")
     else:
         os.makedirs(cache_dir, exist_ok=True)
 
