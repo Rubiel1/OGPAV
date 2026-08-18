@@ -406,7 +406,7 @@ def OperadicGPAV(
                 custom_order_i = segment_topo_orders[i] if segment_topo_orders and i < len(segment_topo_orders) else None
                 
                 _, count, mins, maxs = _process_fiber_task(
-                    i, X_i, idxs, Y, f_i, temp_dir_path, use_trend_following_first, custom_order_i, assume_component_wise
+                    i, X_i, list(range(len(idxs))), Y[idxs], f_i, temp_dir_path, use_trend_following_first, custom_order_i, assume_component_wise
                 )
                 block_counts[i] = count
                 group_min_blocks[i] = mins
@@ -428,7 +428,7 @@ def OperadicGPAV(
                     custom_order_i = segment_topo_orders[i] if segment_topo_orders and i < len(segment_topo_orders) else None
                     fut = executor.submit(
                         _process_fiber_task,
-                        i, X_i, idxs, Y, f_i, temp_dir_path, use_trend_following_first, custom_order_i, assume_component_wise
+                        i, X_i, list(range(len(idxs))), Y[idxs], f_i, temp_dir_path, use_trend_following_first, custom_order_i, assume_component_wise
                     )
                     futures[fut] = i
                 
@@ -457,7 +457,7 @@ def OperadicGPAV(
                             custom_order_i = segment_topo_orders[ni] if segment_topo_orders and ni < len(segment_topo_orders) else None
                             new_fut = executor.submit(
                                 _process_fiber_task,
-                                ni, nX_i, nidxs, Y, f_i, temp_dir_path, use_trend_following_first, custom_order_i, assume_component_wise
+                                ni, nX_i, list(range(len(nidxs))), Y[nidxs], f_i, temp_dir_path, use_trend_following_first, custom_order_i, assume_component_wise
                             )
                             futures[new_fut] = ni
                         except StopIteration:
