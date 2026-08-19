@@ -321,10 +321,6 @@ plot_3d(X, y, title="nonlinear + normal noise")
 All algorithms assume acyclic partial orders (posets).
 
 Please index the nodes of `R_i` with indices from `0` to `n_i - 1`.
-`OperadicGPAV` never infers a partial order from your coordinates. A fiber with no
-comparator is an antichain. If you want the geometry to matter, say so with `f` or
-`assume_component_wise=True`. (`utils.sb_gpav` uses the opposite convention: there,
-`f=None` means coordinate-wise dominance.)
 ## Authors
 
 Eric Dolores Cuenca, Susana Lopez Moreno, Jonathan Toledo Toledo, Anh Nguyen, Sangil Kim
