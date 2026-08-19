@@ -211,33 +211,23 @@ def _lower_y_dfs(
     # DFS Implementation of LowerY
     yielded = set()
     result = []
-    
-    # Recursion limit check (worst case depth is N)
-    import sys
-    sys.setrecursionlimit(max(sys.getrecursionlimit(), len(nodes) + 1000))
-    
-    def visit(u):
-        if u in yielded:
-            return
-            
-        # Visit unyielded parents (ancestors) in sorted order
-        # Any unyielded parent p has Y(p) >= Y(original_target) globally,
-        # so we peel them off in increasing Y order.
-        for p in rev_adj[u]:
-            if p not in yielded:
-                visit(p)
-        
-        # After dependencies are cleared, yield u
-        if u not in yielded:
-            yielded.add(u)
-            result.append(u)
-    
-    # Main Loop (mimics LowerY on the remaining set)
-    # nodes is already sorted by Y (global_order)
+
     for root in nodes:
-        if root not in yielded:
-            visit(root)
-    
+        if root in yielded:
+            continue
+        stack = [(root, iter(rev_adj[root]))]
+        while stack:
+            u, it = stack[-1]
+            for p in it:
+                if p not in yielded:
+                    stack.append((p, iter(rev_adj[p])))
+                    break
+            else:
+                stack.pop()
+                if u not in yielded:
+                    yielded.add(u)
+                    result.append(u)
+
     return result
 
 
@@ -253,7 +243,7 @@ def trend_following_order(
     G: Optional[nx.DiGraph] = None,
     *,
     stable_tiebreak: bool = True,
-    sparse_data: bool = False,
+    sparse_data: bool = True,
 ) -> List[Hashable]:
     """
     Faithful implementation of the SB paper's trend-following topological order:
@@ -276,13 +266,10 @@ def trend_following_order(
     stable_tiebreak : bool
         If True, ties are broken deterministically using the (Y, rank) order induced
         by sorting nodes by (Y, node_as_str).
-    sparse_data : bool (default=False)
+    sparse_data : bool (default=True)
         If True, uses optimized DFS-based implementation: O((N+E) log N) time, O(N+E) space.
         If False, uses naive implementation from paper: O(N²) time, O(N) space.
         
-        Recommendations:
-        - sparse_data=False (default): Dense graphs where E ≈ N², or unknown graph density
-        - sparse_data=True: Sparse graphs where E ≈ N or E ≈ N log N (typical for dominance orders)
 
     Output
     ------
