@@ -127,8 +127,13 @@ if __name__ == "__main__":
   Comparator function(s) defining the partial order on fiber elements.
   - If **single function**: `f(a, b) -> bool` used for all fibers
   - If **list of functions**: `[f_0, ..., f_{m-1}]`, one per fiber
-  - If **None and `assume_component_wise=True`**: uses geometric coordinate-wise comparison `a <= b ⟺ a[k] <= b[k] ∀k`
-  - If **None and `assume_component_wise=False`**: the algorithm assumes the corresponding fiber `R_i` is an entirely disjoint union of points (antichain) and skips all local DAG constructions and `gpav_seg` steps, feeding trivially into Stage 2.
+  - If **None** (or `None` at position `i` of the list): **no order is asserted** on that
+    fiber. `R_i` is treated as an antichain (a disjoint union of points); all local DAG
+    construction and `gpav_seg` steps are skipped and the fiber feeds `n_i` singleton
+    blocks into Stage 2, constrained only through `Q`. This is the least-assumption
+    default — coordinate-wise dominance is *not* inferred from the coordinates.
+  - If **None and `assume_component_wise=True`**: coordinate-wise comparison
+    `a <= b ⟺ a[k] <= b[k] ∀k`, with the low-memory incremental DAG build.
 
 - **`indices_list`** *(List[List[int]], default=None)*:  
   Explicit mapping of Y indices to fibers. If None, assumes lexicographic concatenation.
@@ -219,7 +224,7 @@ u = OperadicGPAV(
     Q=Q,
     R_datasets=R_datasets,
     Y=Y,
-    f=[None, r1_comparator],  # None uses default for R_0
+    f=[None, r1_comparator],  #  R_0: no order asserted -> antichain (Y passes through unchanged);  custom order for R_1
     max_workers=1,
     assume_component_wise=False,  # must be False if custom comparators are provided
 )
@@ -316,7 +321,10 @@ plot_3d(X, y, title="nonlinear + normal noise")
 All algorithms assume acyclic partial orders (posets).
 
 Please index the nodes of `R_i` with indices from `0` to `n_i - 1`.
-
+`OperadicGPAV` never infers a partial order from your coordinates. A fiber with no
+comparator is an antichain. If you want the geometry to matter, say so with `f` or
+`assume_component_wise=True`. (`utils.sb_gpav` uses the opposite convention: there,
+`f=None` means coordinate-wise dominance.)
 ## Authors
 
 Eric Dolores Cuenca, Susana Lopez Moreno, Jonathan Toledo Toledo, Anh Nguyen, Sangil Kim
