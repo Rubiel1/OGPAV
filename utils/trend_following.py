@@ -34,24 +34,28 @@ def _build_dag_incrementally(
         
         for idx_j in range(N_subset):
             j = indices[idx_j]
-            current_parents = []
+            # `blocked` = nodes already known to reach a chosen parent of j, so an
+            # edge from them to j would be transitively redundant. Maintaining it
+            # incrementally replaces the per-candidate nx.has_path() traversal.
+            blocked = set()
             
             # Scan backwards to find immediate predecessors
             for idx_i in range(idx_j - 1, -1, -1):
                 i = indices[idx_i]
                 
+                if i in blocked:
+                    continue
+                
                 if precedes_func(i, j):
-                    # Redundancy check:
-                    # Is i an ancestor of any node already found as a parent of j?
-                    is_redundant = False
-                    for p in current_parents:
-                        if nx.has_path(G, i, p):
-                            is_redundant = True
-                            break
-                    
-                    if not is_redundant:
-                        G.add_edge(i, j)
-                        current_parents.append(i)
+                    G.add_edge(i, j)
+                    # every ancestor of i also reaches j through i
+                    stack = [i]
+                    while stack:
+                        x = stack.pop()
+                        for w in G.predecessors(x):
+                            if w not in blocked:
+                                blocked.add(w)
+                                stack.append(w)
         return G
     else:
         G = nx.DiGraph()
