@@ -235,17 +235,16 @@ def OperadicGPAV(
         If None, all fibers use default ordering.
         
     assume_component_wise : bool, optional
-        Selects the comparator AND the DAG-construction strategy.
-        If True: the coordinate-wise order (a <= b iff a[k] <= b[k] for all k) is
-        used for every fiber, and the DAG is built incrementally — rows are sorted
-        internally by coordinate sum (the caller's row order is irrelevant) and only
-        non-redundant edges are ever materialised. Memory stays O(|reduced DAG|).
-        Cannot be combined with a custom `f`: the sum-sort is only valid for
-        coordinate-wise dominance.
-        If False (default): `f` is used as given, and the DAG is built by testing all
-        O(n_i^2) pairs and then applying nx.transitive_reduction. This materialises the
-        full transitive closure first — roughly 47 MB for a 800-element chain versus
-        0.6 MB incrementally — and raises NetworkXError if any two rows are equal.
+        If True, the coordinate-wise order is used (a <= b iff a[k] <= b[k] for all k)
+        and rows are sorted internally by coordinate sum, which is a linear extension
+        of it. The DAG is then built in a single backward sweep that materialises only
+        the reduced graph — memory stays proportional to the number of covers.
+        Cannot be combined with a custom `f`: the sum-sort is a linear extension of
+        coordinate-wise dominance only.
+        If False (default), no linear extension is assumed, so all O(n_i^2) pairs are
+        tested and nx.transitive_reduction is applied. This materialises the full
+        transitive closure first (~47 MB for an 800-element chain, versus 0.6 MB
+        incrementally) and raises NetworkXError if two rows are equal.
 
     Returns
     -------
