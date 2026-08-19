@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+  # -*- coding: utf-8 -*-
 """
 OperadicGPAV.py
 
@@ -212,7 +212,14 @@ def OperadicGPAV(
         
         - If single function: f(a, b) -> bool, used for ALL R_i
         - If list of functions: [f_0, ..., f_{m-1}], one per R_i
-        - If None: defaults to coordinate-wise comparison for all R_i
+        - If None (or None at position i in the list): NO order is asserted on
+          that fiber. R_i is taken to be an antichain — a disjoint union of
+          points — and the local DAG construction and gpav_seg are skipped
+          entirely. The fiber contributes n_i singleton blocks to Stage 2 and
+          its elements are constrained only through Q.
+          This is NOT the coordinate-wise default; pass assume_component_wise=True
+          or f=default_comparator for that. Note this differs from utils.sb_gpav,
+          where f=None does mean coordinate-wise dominance.
         
         Each f_i(a, b) should return True if a <= b in the partial order.
     
@@ -228,9 +235,17 @@ def OperadicGPAV(
         If None, all fibers use default ordering.
         
     assume_component_wise : bool, optional
-        If True, assumes R_datasets elements are given in a valid topological order 
-        respecting `f`, enabling a fast graph building path. If False (default), 
-        verifies all O(N^2) pairs for safety.
+        Selects the comparator AND the DAG-construction strategy.
+        If True: the coordinate-wise order (a <= b iff a[k] <= b[k] for all k) is
+        used for every fiber, and the DAG is built incrementally — rows are sorted
+        internally by coordinate sum (the caller's row order is irrelevant) and only
+        non-redundant edges are ever materialised. Memory stays O(|reduced DAG|).
+        Cannot be combined with a custom `f`: the sum-sort is only valid for
+        coordinate-wise dominance.
+        If False (default): `f` is used as given, and the DAG is built by testing all
+        O(n_i^2) pairs and then applying nx.transitive_reduction. This materialises the
+        full transitive closure first — roughly 47 MB for a 800-element chain versus
+        0.6 MB incrementally — and raises NetworkXError if any two rows are equal.
 
     Returns
     -------
