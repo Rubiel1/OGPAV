@@ -53,6 +53,9 @@ def _full_poset(Q, R, f=default_comparator):
     return G
  
  
+def sse(u, Y):
+    return float(np.sum((np.asarray(u) - np.asarray(Y)) ** 2))
+  
 def _violations(G, u, tol=1e-9):
     return [(a, b) for a, b in G.edges() if u[a] > u[b] + tol]
 
