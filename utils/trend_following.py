@@ -71,7 +71,26 @@ def _build_dag_incrementally(
                 if precedes_func(i, j):
                     G.add_edge(i, j)
                     
-        return nx.transitive_reduction(G)
+        try:
+            return nx.transitive_reduction(G)
+        except nx.NetworkXError:
+            # Diagnose only on failure.  transitive_reduction refuses a cyclic graph,
+            # and the only way this loop can produce a cycle is a relation that is not
+            # antisymmetric: two DISTINCT items u != v with precedes(u,v) and
+            # precedes(v,u).  That is a preorder, not a partial order.
+            _u = _v = None
+            for a, b in G.edges():
+                if G.has_edge(b, a):
+                    _u, _v = a, b
+                    break
+            raise nx.NetworkXError(
+                f"The supplied relation is not antisymmetric: items {_u} and {_v} are "
+                f"distinct but satisfy precedes({_u},{_v}) and precedes({_v},{_u}), so the "
+                "graph is cyclic and has no transitive reduction. A partial order requires "
+                "that only equal items compare both ways. Either the two items are in fact "
+                "duplicates (deduplicate the fiber) or the comparator ranks by a key -- a "
+                "sum, norm, score or index -- that ties them; add a tie-break to make it strict."
+            ) from None
 
 def _lower_y_naive(
     P: List[Hashable],
