@@ -3,12 +3,58 @@ import numpy as np
 import networkx as nx
 import os
 import shutil
+import sys
+import time
+import warnings
 
 from OperadicGPAV import OperadicGPAV, create_lexicographic_mapping
 from utils.sb_gpav import sb_gpav
 from utils.geometric_sb_dataset import generate_dataset_lazy
+from utils.trend_following import (
+    _build_dag_incrementally,
+    default_comparator,
+    trend_following_order,
+)
 
 verbose = False
+
+
+ 
+# ---------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------
+  
+def _chain_Q(m):
+    Q = nx.DiGraph()
+    Q.add_nodes_from(range(m))
+    Q.add_edges_from((i, i + 1) for i in range(m - 1))
+    return Q
+ 
+ 
+def _full_poset(Q, R, f=default_comparator):
+    """The lexicographic sum Q(R_0,...,R_{m-1}) on global indices, strict edges only."""
+    offs, c = [0], 0
+    for r in R:
+        c += len(r)
+        offs.append(c)
+    G = nx.DiGraph()
+    G.add_nodes_from(range(c))
+    for i, r in enumerate(R):
+        for a in range(len(r)):
+            for b in range(len(r)):
+                if a != b and f(r[a], r[b]) and not f(r[b], r[a]):
+                    G.add_edge(offs[i] + a, offs[i] + b)
+    if Q.number_of_edges():
+        TC = nx.transitive_closure_dag(nx.transitive_reduction(Q))
+        for i, j in TC.edges():
+            for a in range(len(R[i])):
+                for b in range(len(R[j])):
+                    G.add_edge(offs[i] + a, offs[j] + b)
+    return G
+ 
+ 
+def _violations(G, u, tol=1e-9):
+    return [(a, b) for a, b in G.edges() if u[a] > u[b] + tol]
 
 class TestArrayStack:
     """
@@ -880,49 +926,272 @@ class TestArrayStack:
         assert np.max(u2[:2]) <= np.min(u2[2:]), "Global Q constraint violated during antichain processing"
 
 
+
+# ---------------------------------------------------------------------
+# Defect 1 -- ties are reported, not raised as an opaque NetworkXError
+# ---------------------------------------------------------------------
+ 
+class TestTiesAreDiagnosed:
+    """`f` must be antisymmetric on distinct elements.  Both ways it can fail
+    should produce a message naming the cause, not a bare transitive_reduction
+    error from deep inside networkx."""
+ 
+    def test_duplicate_rows_name_the_fiber(self):
+        # Elements 0 and 1 are the SAME point -> R_0 is not a set.
+        R = [np.array([[2., 5.], [2., 5.], [4., 7.]]), np.array([[9., 9.]])]
+        Y = np.array([1., 5., 9., 20.])          # keeps the copies in separate blocks
+        with pytest.raises(ValueError, match=r"repeated elements"):
+            OperadicGPAV(Q=nx.DiGraph([(0, 1)]), R_datasets=R, Y=Y,
+                         assume_component_wise=True, max_workers=1)
+ 
+    def test_duplicate_rows_are_caught_regardless_of_Y(self):
+        # Same malformed input, but Y would have let GPAV pool the copies.
+        # Whether the old code crashed or returned a number was an accident of Y;
+        # if this ever stops raising, the pooled answer must at least be consistent.
+        R = [np.array([[2., 5.], [2., 5.], [4., 7.]]), np.array([[9., 9.]])]
+        Y = np.array([5., 1., 9., 20.])
+        try:
+            u = OperadicGPAV(Q=nx.DiGraph([(0, 1)]), R_datasets=R, Y=Y,
+                             assume_component_wise=True, max_workers=1)
+        except ValueError:
+            return                                 # rejected up front: also fine
+        assert u[0] == pytest.approx(u[1]), "identical rows must get identical fits"
+ 
+    def test_non_antisymmetric_comparator_is_named(self):
+        # (3,1) and (1,3) are DISTINCT rows, but by_total ties them.
+        # The input data is fine; the comparator is not a partial order.
+        def by_total(a, b):
+            return float(np.sum(a)) <= float(np.sum(b))
+ 
+        R = [np.array([[3., 1.], [1., 3.], [5., 5.]]), np.array([[9., 9.]])]
+        Y = np.array([1., 5., 9., 20.])
+        with pytest.raises((ValueError, nx.NetworkXError), match=r"antisymmetric"):
+            OperadicGPAV(Q=nx.DiGraph([(0, 1)]), R_datasets=R, Y=Y,
+                         f=by_total, max_workers=1)
+ 
+    @pytest.mark.parametrize("R0,kw", [
+        (np.array([[2., 5.], [2., 5.0001], [4., 7.]]), dict(assume_component_wise=True)),
+        (np.array([[3., 2.], [1., 3.], [5., 5.]]),
+         dict(f=lambda a, b: float(np.sum(a)) <= float(np.sum(b)))),
+    ])
+    def test_controls_still_run(self, R0, kw):
+        """Same shapes with the tie removed must be unaffected."""
+        u = OperadicGPAV(Q=nx.DiGraph([(0, 1)]),
+                         R_datasets=[R0, np.array([[9., 9.]])],
+                         Y=np.array([1., 5., 9., 20.]), max_workers=1, **kw)
+        assert np.all(np.isfinite(u))
+ 
+    def test_binned_data_no_longer_crashes_opaquely(self):
+        """Integer-coded coordinates used to raise NetworkXError ~75% of the time."""
+        rng = np.random.default_rng(0)
+        opaque = 0
+        for _ in range(25):
+            R = [rng.integers(0, 10, size=(40, 2)).astype(float), np.array([[99., 99.]])]
+            Y = np.concatenate([rng.normal(size=40), [100.]])
+            try:
+                OperadicGPAV(Q=nx.DiGraph([(0, 1)]), R_datasets=R, Y=Y,
+                             assume_component_wise=True, max_workers=1)
+            except (ValueError, nx.NetworkXError) as e:
+                if "transitive_reduction" in str(e) and "antisymmetric" not in str(e):
+                    opaque += 1
+        assert opaque == 0, "a bare transitive_reduction error still reaches the user"
+ 
+ 
+# ---------------------------------------------------------------------
+# Defect 2 -- f=None means ANTICHAIN.  Pin the semantic that was chosen.
+# ---------------------------------------------------------------------
+ 
+class TestFNoneIsAnAntichain:
+    """The audit found the docstring and the code disagreed.  The code won:
+    f=None asserts NO order.  Nothing in the original suite pinned this, so a
+    refactor could silently flip it.  These tests pin it."""
+ 
+    CHAIN = [np.array([[0., 0.], [1., 1.], [2., 2.]]), np.array([[3., 3.]])]
+    Y = np.array([9., 1., 2., 5.])
+ 
+    def test_f_none_does_not_order_the_fiber(self):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            u = OperadicGPAV(Q=nx.DiGraph([(0, 1)]), R_datasets=self.CHAIN,
+                             Y=self.Y, max_workers=1)
+        # elements 1 and 2 are untouched: no intra-fiber order was asserted
+        assert u[1] == pytest.approx(1.0)
+        assert u[2] == pytest.approx(2.0)
+        # ...and that is NOT monotone w.r.t. coordinate-wise dominance, by design
+        G = _full_poset(nx.DiGraph([(0, 1)]), self.CHAIN)
+        assert _violations(G, u), "f=None should not be enforcing the geometric order"
+ 
+    def test_assume_component_wise_does_order_the_fiber(self):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            u = OperadicGPAV(Q=nx.DiGraph([(0, 1)]), R_datasets=self.CHAIN,
+                             Y=self.Y, assume_component_wise=True, max_workers=1)
+        G = _full_poset(nx.DiGraph([(0, 1)]), self.CHAIN)
+        assert not _violations(G, u)
+        np.testing.assert_allclose(u, [4., 4., 4., 5.])
+ 
+    def test_none_inside_a_list_is_also_an_antichain(self):
+        """README's f=[None, custom] pattern: position 0 asserts no order."""
+        R = [np.array([[0.], [1.], [2.]]), np.array([[0., 0.], [1., 1.]])]
+        Y = np.array([3., 1., 2., 4., 5.])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            u = OperadicGPAV(Q=nx.DiGraph([(0, 1)]), R_datasets=R, Y=Y,
+                             f=[None, lambda a, b: float(np.sum(np.abs(a))) <
+                                                    float(np.sum(np.abs(b)))],
+                             max_workers=1)
+        np.testing.assert_allclose(u[:3], [3., 1., 2.])
+ 
+ 
+# ---------------------------------------------------------------------
+# Defect 3 -- empty fibers are rejected (Schroder, Def. 7.1)
+# ---------------------------------------------------------------------
+ 
+class TestEmptyFibersRejected:
+ 
+    def test_empty_fiber_in_the_middle_of_a_chain(self):
+        R = [np.array([[0., 0.]]), np.zeros((0, 2)), np.array([[2., 2.]])]
+        with pytest.raises(ValueError, match=r"empty"):
+            OperadicGPAV(Q=_chain_Q(3), R_datasets=R, Y=np.array([9., 1.]),
+                         assume_component_wise=True, max_workers=1)
+ 
+    def test_empty_fiber_on_the_no_edge_fast_path(self):
+        """The Q-has-no-edges branch returns early; the guard must precede it."""
+        Q = nx.DiGraph()
+        Q.add_nodes_from([0, 1])
+        with pytest.raises(ValueError, match=r"empty"):
+            OperadicGPAV(Q=Q, R_datasets=[np.array([[0., 0.]]), np.zeros((0, 2))],
+                         Y=np.array([9.]), assume_component_wise=True, max_workers=1)
+ 
+    def test_nonempty_chain_is_unaffected(self):
+        R = [np.array([[0., 0.]]), np.array([[1., 1.]]), np.array([[2., 2.]])]
+        u = OperadicGPAV(Q=_chain_Q(3), R_datasets=R, Y=np.array([9., 5., 1.]),
+                         assume_component_wise=True, max_workers=1)
+        np.testing.assert_allclose(u, [5., 5., 5.])
+ 
+ 
+class TestYLengthValidated:
+ 
+    R = [np.array([[0., 0.], [1., 1.]]), np.array([[2., 2.]])]   # N = 3
+ 
+    @pytest.mark.parametrize("Y", [np.array([5., 1.]),                    # short
+                                   np.array([5., 1., 9., 100., 200.])])   # long
+    def test_wrong_length_is_rejected(self, Y):
+        with pytest.raises(ValueError, match=r"length"):
+            OperadicGPAV(Q=nx.DiGraph([(0, 1)]), R_datasets=self.R, Y=Y,
+                         assume_component_wise=True, max_workers=1)
+ 
+    def test_too_long_no_longer_returns_padded_zeros(self):
+        """The dangerous case: the old code returned [3,3,9,0,0] with no error."""
+        with pytest.raises(ValueError):
+            OperadicGPAV(Q=nx.DiGraph([(0, 1)]), R_datasets=self.R,
+                         Y=np.arange(20, dtype=float),
+                         assume_component_wise=True, max_workers=1)
+ 
+ 
+# ---------------------------------------------------------------------
+# Defect 4 -- no RecursionError on wide inputs, and no global limit mutation
+# ---------------------------------------------------------------------
+ 
+class TestNoRecursionLimit:
+ 
+    @staticmethod
+    def _wide_fiber(n):
+        return np.stack([np.arange(n, dtype=float), n - np.arange(n, dtype=float)], axis=1)
+ 
+    def test_stage2_beyond_1000_blocks(self):
+        """1,200 mutually incomparable blocks used to raise RecursionError."""
+        n = 1200
+        R = [self._wide_fiber(n), np.array([[1e6, 1e6]])]
+        Y = np.concatenate([np.random.default_rng(0).normal(size=n), [1e3]])
+        u = OperadicGPAV(Q=nx.DiGraph([(0, 1)]), R_datasets=R, Y=Y,
+                         assume_component_wise=True, max_workers=1)
+        assert len(u) == n + 1 and np.all(np.isfinite(u))
+ 
+    def test_stage1_beyond_1000_elements(self):
+        """A near-antichain fiber of 1,100 points used to raise RecursionError."""
+        n = 1100
+        pts = self._wide_fiber(n)
+        pts[0] = [0., 0.]                       # one element below everything
+        Y = np.concatenate([np.random.default_rng(0).normal(size=n), [1e3]])
+        u = OperadicGPAV(Q=nx.DiGraph([(0, 1)]),
+                         R_datasets=[pts, np.array([[1e6, 1e6]])], Y=Y,
+                         assume_component_wise=True, max_workers=1)
+        assert len(u) == n + 1 and np.all(np.isfinite(u))
+ 
+    def test_library_does_not_mutate_the_recursion_limit(self):
+        before = sys.getrecursionlimit()
+        G = nx.DiGraph((i, i + 1) for i in range(3000))
+        trend_following_order(G=G, Y={i: float(3000 - i) for i in G.nodes()})
+        assert sys.getrecursionlimit() == before
+ 
+    def test_deep_chain_at_the_stock_limit(self):
+        """Depth is the longest chain; the iterative DFS must not care."""
+        n = 20000
+        G = nx.DiGraph((i, i + 1) for i in range(n - 1))
+        order = trend_following_order(G=G, Y={i: float(n - i) for i in G.nodes()})
+        assert len(order) == n
+ 
+ 
+# ---------------------------------------------------------------------
+# Optimisation -- the DAG builder must be equivalent AND fast
+# ---------------------------------------------------------------------
+ 
+class TestDagBuilderOptimisation:
+ 
+    def test_incremental_matches_all_pairs(self):
+        """The two branches must agree edge-for-edge on tie-free data."""
+        rng = np.random.default_rng(0)
+        for _ in range(120):
+            n = int(rng.integers(3, 25))
+            X = rng.random((n, int(rng.choice([1, 2, 3]))))
+            fast = _build_dag_incrementally(
+                np.argsort(X.sum(1)).tolist(),
+                lambda a, b: default_comparator(X[a], X[b]), True)
+            safe = _build_dag_incrementally(
+                list(range(n)),
+                lambda a, b: default_comparator(X[a], X[b]), False)
+            assert set(fast.edges()) == set(safe.edges())
+ 
+    def test_chain_build_is_not_cubic(self):
+        """nx.has_path per candidate took ~45 s for an 800-element chain."""
+        X = np.arange(800, dtype=float).reshape(-1, 1)
+        t0 = time.time()
+        G = _build_dag_incrementally(
+            list(range(800)), lambda a, b: default_comparator(X[a], X[b]), True)
+        elapsed = time.time() - t0
+        assert G.number_of_edges() == 799
+        assert elapsed < 5.0, f"chain build took {elapsed:.1f}s (was ~45s with has_path)"
+ 
+ 
+# ---------------------------------------------------------------------
+# End-to-end -- the property the whole algorithm exists to guarantee
+# ---------------------------------------------------------------------
+ 
+class TestFeasibility:
+ 
+    def test_random_instances_are_monotone(self):
+        """The fit must respect the lexicographic-sum order on every instance."""
+        rng = np.random.default_rng(11)
+        checked = 0
+        for _ in range(40):
+            m = int(rng.integers(2, 5))
+            Q = nx.DiGraph()
+            Q.add_nodes_from(range(m))
+            for i in range(m):
+                for j in range(i + 1, m):
+                    if rng.random() < 0.5:
+                        Q.add_edge(i, j)
+            if Q.number_of_edges() == 0:
+                continue
+            R = [rng.random((int(rng.integers(2, 9)), 2)) for _ in range(m)]
+            Y = rng.normal(size=sum(len(r) for r in R))
+            u = OperadicGPAV(Q=Q, R_datasets=R, Y=Y,
+                             assume_component_wise=True, max_workers=1)
+            assert not _violations(_full_poset(Q, R), u)
+            checked += 1
+        assert checked >= 20
+
 if __name__ == "__main__":
     # Run tests
-    t = TestArrayStack()
-    print("Running test_sb_gpav_identity...")
-    t.test_sb_gpav_identity()
-    print("Running test_op_gpav_single_fiber...")
-    t.test_op_gpav_single_fiber()
-    print("Running test_op_gpav_multi_fiber_chain...")
-    t.test_op_gpav_multi_fiber_chain()
-    print("Running test_operadic_diamond_structure...")
-    t.test_operadic_diamond_structure()
-    print("Running test_parallel_execution...")
-    t.test_parallel_execution()
-    print("Running test_sb_gpav_violations...")
-    t.test_sb_gpav_violations()
-    print("Running test_custom_comparator...")
-    t.test_custom_comparator()
-    print("Running test_position_array...")
-    t.test_position_array()
-    print("Running test_position2_array...")
-    t.test_position2_array()
-    print("Running test_secondstage_array...")
-    t.test_secondstage_array()
-    print("Running test_sb_isotone_explicit...")
-    t.test_sb_isotone_explicit()
-    print("Running test_sb_gpav_chain_explicit...")
-    t.test_sb_gpav_chain_explicit()
-    print("Running test_gpav_infrastructure...")
-    t.test_gpav_infrastructure()
-    print("Running test_linearization_array...")
-    t.test_linearization_array()
-    print("Running test_gpav_with_weights...")
-    t.test_gpav_with_weights()
-    print("Running test_operadic_geometric_dataset...")
-    t.test_operadic_geometric_dataset()
-    print("Running test_operadic_lazy_iterators...")
-    t.test_operadic_lazy_iterators()
-    print("Running test_operadic_lazy_large_scale...")
-    t.test_operadic_lazy_large_scale()
-    print("Running test_trend_following_flags...")
-    t.test_trend_following_flags()
-    print("Running test_dataset_loaders...")
-    t.test_dataset_loaders()
-    print("Running test_border_cases...")
-    t.test_border_cases()
-    print("\n All tests passed!")
+    sys.exit(pytest.main([__file__, "-q"]))
