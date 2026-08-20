@@ -328,6 +328,33 @@ def OperadicGPAV(
     m = len(indices_list)
     Y = np.asarray(Y)
 
+    # --- Reject empty fibers -------------------------------------------------
+    # A lexicographic sum Q(R_1,...,R_t) is only defined for NONEMPTY R_i
+    # (Schroder, Ordered Sets, Def. 7.1).  An empty fiber contributes no blocks,
+    # so the Q-edges into and out of it silently vanish in Pass 2 -- and because
+    # H_Q is the transitive reduction, no edge remains to carry the constraint
+    # across it.  The result would be a plausible but non-monotone fit.
+  
+    _empty = [i for i in range(m) if len(indices_list[i]) == 0]
+    if _empty:
+        raise ValueError(
+            f"Fiber(s) {_empty} are empty. The lexicographic sum Q(R_1,...,R_t) is "
+            "only defined for nonempty R_i. Remove these nodes from Q and reconnect "
+            "each of their predecessors to each of their successors, then drop the "
+            "corresponding entries from R_datasets and indices_list."
+        )
+
+    # --- Validate Y length ---------------------------------------------------
+    # Too short raises a bare IndexError deep inside Stage 1; too long is worse,
+    # since u_final_global is sized from len(Y) and the unmapped tail is returned
+    # as zeros that are indistinguishable from fitted values.
+    _mapped = sum(len(ix) for ix in indices_list)
+    if len(Y) != _mapped:
+        raise ValueError(
+            f"Y has length {len(Y)} but the fibers account for {_mapped} elements. "
+            "Y must have exactly one entry per element of the lexicographic sum "
+            "(N = sum of the fiber sizes)."
+        )
     # Prepare Temp Directory
     if temp_dir is None:
         temp_dir_obj = tempfile.TemporaryDirectory(prefix="ogpav_intermediary_")
