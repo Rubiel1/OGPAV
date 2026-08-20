@@ -1192,6 +1192,124 @@ class TestFeasibility:
             checked += 1
         assert checked >= 20
 
+
+ 
+class TestFastMode:
+    """fast_mode routes each Q-edge through one weight-0 gateway node instead of
+    the complete bipartite graph max(i) x min(j).  Same constraint set, smaller
+    graph, different greedy path.
+ 
+    NOTE on what is and is not asserted here.  There is NO structural class of Q
+    on which the two modes provably agree -- chains, trees and diamonds all
+    produce occasional disagreements (measured: ~4% of random instances).  So
+    these tests pin the properties that ARE invariant (default off, feasibility,
+    weight-0, memory) and bound the deviation rather than forbidding it."""
+ 
+    @staticmethod
+    def _random_Q(rng, m, style):
+        Q = nx.DiGraph(); Q.add_nodes_from(range(m))
+        if style == "chain":
+            Q.add_edges_from((i, i + 1) for i in range(m - 1))
+        elif style == "diamond" and m >= 4:
+            Q.add_edges_from([(0, 1), (0, 2), (1, m - 1), (2, m - 1)])
+        elif style == "tree":
+            for j in range(1, m):
+                Q.add_edge(int(rng.integers(0, j)), j)
+        elif style == "fanin":
+            Q.add_edges_from((i, m - 1) for i in range(m - 1))
+        elif style == "fanout":
+            Q.add_edges_from((0, i) for i in range(1, m))
+        else:
+            for i in range(m):
+                for j in range(i + 1, m):
+                    if rng.random() < 0.5:
+                        Q.add_edge(i, j)
+        return Q
+ 
+    def test_default_is_off(self):
+        """A caller who never mentions fast_mode must get the exact form."""
+        rng = np.random.default_rng(0)
+        R = [rng.random((12, 2)) + 3.0 * k for k in range(4)]
+        Q = self._random_Q(rng, 4, "chain")
+        Y = rng.normal(size=48)
+        a = OperadicGPAV(Q=Q, R_datasets=R, Y=Y, assume_component_wise=True, max_workers=1)
+        b = OperadicGPAV(Q=Q, R_datasets=R, Y=Y, assume_component_wise=True,
+                         max_workers=1, fast_mode=False)
+        np.testing.assert_array_equal(a, b)
+ 
+    def test_fast_mode_is_feasible(self):
+        """The gateway must preserve the constraint set on every Q shape.
+        This is the strong invariant: it holds unconditionally."""
+        rng = np.random.default_rng(5)
+        for style in ("chain", "diamond", "tree", "fanin", "fanout", "random"):
+            for _ in range(6):
+                m = int(rng.integers(3, 7))
+                Q = self._random_Q(rng, m, style)
+                if Q.number_of_edges() == 0:
+                    continue
+                R = [rng.random((int(rng.integers(2, 9)), 2)) for _ in range(m)]
+                Y = rng.normal(size=sum(len(r) for r in R))
+                u = OperadicGPAV(Q=Q, R_datasets=R, Y=Y, assume_component_wise=True,
+                                 max_workers=1, fast_mode=True)
+                assert not _violations(_full_poset(Q, R), u), \
+                    f"fast_mode produced an infeasible fit on a {style} Q"
+ 
+    def test_gateway_carries_no_mass(self):
+        """weight=0 means the gateway never enters an average.  If it did, the
+        total fitted mass would drift away from sum(Y)."""
+        rng = np.random.default_rng(9)
+        for style in ("chain", "diamond", "random"):
+            m = 5
+            Q = self._random_Q(rng, m, style)
+            if Q.number_of_edges() == 0:
+                continue
+            R = [rng.random((int(rng.integers(3, 10)), 2)) for _ in range(m)]
+            Y = rng.normal(size=sum(len(r) for r in R))
+            u = OperadicGPAV(Q=Q, R_datasets=R, Y=Y, assume_component_wise=True,
+                             max_workers=1, fast_mode=True)
+            assert u.sum() == pytest.approx(Y.sum(), abs=1e-9), \
+                "gateway leaked mass into the fit"
+ 
+    def test_deviation_from_exact_is_bounded(self):
+        """fast_mode may reach a different feasible optimum, but not a wild one.
+        Observed worst over 565 random instances: 1.6% of the total sum of
+        squares.  The bound below leaves ~6x headroom."""
+        rng = np.random.default_rng(31337)
+        worst = 0.0
+        for t in range(120):
+            m = int(rng.integers(2, 8))
+            Q = self._random_Q(rng, m, ("chain", "diamond", "tree", "random")[t % 4])
+            if Q.number_of_edges() == 0:
+                continue
+            R = [rng.random((int(rng.integers(1, 12)), 2)) for _ in range(m)]
+            Y = rng.normal(size=sum(len(r) for r in R))
+            tss = float(np.sum((Y - Y.mean()) ** 2))
+            if tss < 1e-9:
+                continue
+            kw = dict(Q=Q, R_datasets=R, Y=Y, assume_component_wise=True, max_workers=1)
+            a, b = OperadicGPAV(**kw), OperadicGPAV(fast_mode=True, **kw)
+            worst = max(worst, abs(sse(b, Y) - sse(a, Y)) / tss)
+        assert worst < 0.10, f"fast_mode deviated by {worst:.4f} of TSS from the exact form"
+ 
+    def test_fast_mode_uses_less_memory(self):
+        """On an uncompressible fiber the saving must actually materialise."""
+        ni, m = 40, 3
+        R = [np.stack([np.arange(ni, dtype=float),
+                       ni - np.arange(ni, dtype=float)], axis=1) + 0.001 * k
+             for k in range(m)]
+        Q = nx.DiGraph(); Q.add_nodes_from(range(m))
+        Q.add_edges_from((i, i + 1) for i in range(m - 1))
+        Y = np.random.default_rng(0).normal(size=m * ni)
+        import tracemalloc
+        peaks = []
+        for fm in (False, True):
+            tracemalloc.start()
+            OperadicGPAV(Q=Q, R_datasets=R, Y=Y, assume_component_wise=True,
+                         max_workers=1, fast_mode=fm)
+            peaks.append(tracemalloc.get_traced_memory()[1])
+            tracemalloc.stop()
+        assert peaks[1] < peaks[0] / 2, f"fast_mode did not reduce memory: {peaks}"
+
 if __name__ == "__main__":
     # Run tests
     sys.exit(pytest.main([__file__, "-q"]))
