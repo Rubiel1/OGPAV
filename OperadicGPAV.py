@@ -154,8 +154,34 @@ def _process_fiber_task(
         def check_block_prec(bi, bj):
             return _block_precedes(block_extrema[bi][0], block_extrema[bj][1], X_i, f)
         
-        G_loc = _build_dag_incrementally(list(range(len(blocks))), check_block_prec)
-        
+        try:
+            G_loc = _build_dag_incrementally(list(range(len(blocks))), check_block_prec)
+        except nx.NetworkXError:
+            # The block relation is cyclic, and by far the
+            # most common cause is repeated elements in R_i: two equal rows are mutually
+            # <= under any reflexive comparator, so the blocks holding them precede each
+            # other.  A poset must have distinct elements.
+            try:
+                _arr = np.asarray(X_i)
+                _first, _cnt = np.unique(_arr, axis=0, return_index=True, return_counts=True)[1:3]
+                _dup = _first[_cnt > 1]
+            except Exception:
+                _dup = []
+            if len(_dup):
+                raise ValueError(
+                    f"Fiber {i} contains repeated elements (e.g. the row at index "
+                    f"{_dup[:3].tolist()} occurs more than once). A poset R_i must have "
+                    "distinct elements: equal rows are mutually <=, which makes the block "
+                    "relation cyclic. Deduplicate the fiber, pooling the Y values of the "
+                    "repeated rows, before calling OperadicGPAV."
+                ) from None
+            raise ValueError(
+                f"Fiber {i}: the comparator is not antisymmetric -- two distinct elements "
+                "x != y satisfy f(x,y) and f(y,x), so the block relation is cyclic. "
+                "That is a preorder, not a partial order. If your comparator ranks by a "
+                "key (a sum, score or index), add a tie-break to make it strict."
+            ) from None
+      
         mins = [n for n in G_loc.nodes() if G_loc.in_degree(n) == 0]
         maxs = [n for n in G_loc.nodes() if G_loc.out_degree(n) == 0]
         
