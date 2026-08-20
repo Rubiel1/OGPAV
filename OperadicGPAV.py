@@ -282,19 +282,25 @@ def OperadicGPAV(
         With fast_mode=False that is emitted directly, as |max(i)| * |min(j)|
         edges.  With fast_mode=True it is routed through a single weight-0
         gateway node, max(i) -> g -> min(j), costing |max(i)| + |min(j)| edges.
-        Reachability -- and therefore the constraint set -- is identical.
+        Reachability -- and therefore the constraint set -- is identical, and
+        the gateway carries no weight, so it never enters any average.
 
-        Over 472 randomised instances both modes produced a feasible (monotone) fit every
-        time; the fitted values differed on 7, where fast_mode was worse 4 times
-        and better 3 times, by at most 0.25% of the total sum of squares.  It is
-        simply a different greedy path, so results are not comparable
-        bit-for-bit with runs made at the default.
+        fast_mode=True  is a different greedy path, so it does not reproduce the default bit-for-bit.
+        Measured over 873 randomised instances: every run was feasible; the
+        fitted values differed on 34 of them (3.9%), fast_mode being worse 15
+        times and better 9 times, with a mean SSE change of +8e-05 and a worst
+        case of 2.1% of the total sum of squares.
+
+        No Q shape is exempt.  Disagreements were concentrated in shapes where
+        two paths split and later rejoin (diamond 19/136) but also occurred on
+        trees (4/150) and chains (2/150).  Fan-in and fan-out produced none
+        (0/150 each).  
 
         The benefit appears when Stage 1 fails to compress a fiber: an
         uncompressible fiber contributes one block per element, and every block
         is then both a source and a sink.  On antichain fibers under a chain Q
-        (m=10, n_i=200) fast_mode was ~4x faster and used ~25x less memory.
-        On a tree-shaped Q the two modes agreed on every instance tested.
+        (m=10, n_i=200) fast_mode ran in 2.9 s against 10.6 s and peaked at
+        3.3 MB against 83.8 MB.
         
     Returns
     -------
