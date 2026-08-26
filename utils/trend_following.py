@@ -34,24 +34,28 @@ def _build_dag_incrementally(
         
         for idx_j in range(N_subset):
             j = indices[idx_j]
-            current_parents = []
+            # `blocked` = nodes already known to reach a chosen parent of j, so an
+            # edge from them to j would be transitively redundant. Maintaining it
+            # incrementally replaces the per-candidate nx.has_path() traversal.
+            blocked = set()
             
             # Scan backwards to find immediate predecessors
             for idx_i in range(idx_j - 1, -1, -1):
                 i = indices[idx_i]
                 
+                if i in blocked:
+                    continue
+                
                 if precedes_func(i, j):
-                    # Redundancy check:
-                    # Is i an ancestor of any node already found as a parent of j?
-                    is_redundant = False
-                    for p in current_parents:
-                        if nx.has_path(G, i, p):
-                            is_redundant = True
-                            break
-                    
-                    if not is_redundant:
-                        G.add_edge(i, j)
-                        current_parents.append(i)
+                    G.add_edge(i, j)
+                    # every ancestor of i also reaches j through i
+                    stack = [i]
+                    while stack:
+                        x = stack.pop()
+                        for w in G.predecessors(x):
+                            if w not in blocked:
+                                blocked.add(w)
+                                stack.append(w)
         return G
     else:
         G = nx.DiGraph()
@@ -67,7 +71,26 @@ def _build_dag_incrementally(
                 if precedes_func(i, j):
                     G.add_edge(i, j)
                     
-        return nx.transitive_reduction(G)
+        try:
+            return nx.transitive_reduction(G)
+        except nx.NetworkXError:
+            # Diagnose only on failure.  transitive_reduction refuses a cyclic graph,
+            # and the only way this loop can produce a cycle is a relation that is not
+            # antisymmetric: two DISTINCT items u != v with precedes(u,v) and
+            # precedes(v,u).  That is a preorder, not a partial order.
+            _u = _v = None
+            for a, b in G.edges():
+                if G.has_edge(b, a):
+                    _u, _v = a, b
+                    break
+            raise nx.NetworkXError(
+                f"The supplied relation is not antisymmetric: items {_u} and {_v} are "
+                f"distinct but satisfy precedes({_u},{_v}) and precedes({_v},{_u}), so the "
+                "graph is cyclic and has no transitive reduction. A partial order requires "
+                "that only equal items compare both ways. Either the two items are in fact "
+                "duplicates (deduplicate the fiber) or the comparator ranks by a key -- a "
+                "sum, norm, score or index -- that ties them; add a tie-break to make it strict."
+            ) from None
 
 def _lower_y_naive(
     P: List[Hashable],
@@ -211,33 +234,23 @@ def _lower_y_dfs(
     # DFS Implementation of LowerY
     yielded = set()
     result = []
-    
-    # Recursion limit check (worst case depth is N)
-    import sys
-    sys.setrecursionlimit(max(sys.getrecursionlimit(), len(nodes) + 1000))
-    
-    def visit(u):
-        if u in yielded:
-            return
-            
-        # Visit unyielded parents (ancestors) in sorted order
-        # Any unyielded parent p has Y(p) >= Y(original_target) globally,
-        # so we peel them off in increasing Y order.
-        for p in rev_adj[u]:
-            if p not in yielded:
-                visit(p)
-        
-        # After dependencies are cleared, yield u
-        if u not in yielded:
-            yielded.add(u)
-            result.append(u)
-    
-    # Main Loop (mimics LowerY on the remaining set)
-    # nodes is already sorted by Y (global_order)
+
     for root in nodes:
-        if root not in yielded:
-            visit(root)
-    
+        if root in yielded:
+            continue
+        stack = [(root, iter(rev_adj[root]))]
+        while stack:
+            u, it = stack[-1]
+            for p in it:
+                if p not in yielded:
+                    stack.append((p, iter(rev_adj[p])))
+                    break
+            else:
+                stack.pop()
+                if u not in yielded:
+                    yielded.add(u)
+                    result.append(u)
+
     return result
 
 
@@ -253,7 +266,7 @@ def trend_following_order(
     G: Optional[nx.DiGraph] = None,
     *,
     stable_tiebreak: bool = True,
-    sparse_data: bool = False,
+    sparse_data: bool = True,
 ) -> List[Hashable]:
     """
     Faithful implementation of the SB paper's trend-following topological order:
@@ -276,13 +289,10 @@ def trend_following_order(
     stable_tiebreak : bool
         If True, ties are broken deterministically using the (Y, rank) order induced
         by sorting nodes by (Y, node_as_str).
-    sparse_data : bool (default=False)
+    sparse_data : bool (default=True)
         If True, uses optimized DFS-based implementation: O((N+E) log N) time, O(N+E) space.
         If False, uses naive implementation from paper: O(N²) time, O(N) space.
         
-        Recommendations:
-        - sparse_data=False (default): Dense graphs where E ≈ N², or unknown graph density
-        - sparse_data=True: Sparse graphs where E ≈ N or E ≈ N log N (typical for dominance orders)
 
     Output
     ------
