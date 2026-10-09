@@ -126,7 +126,7 @@ if __name__ == "__main__":
 - **`f`** *(Callable or List[Callable], default=None)*:  
   Comparator function(s) defining the partial order on fiber elements.
   - If **single function**: `f(a, b) -> bool` used for all fibers
-  - If **list of functions**: `[f_0, ..., f_{m-1}]`, one per fiber
+  - If **list**: exactly `m` entries `[f_0, ..., f_{m-1}]`, one per fiber, each a function or `None`. A list of any other length raises `ValueError`.
   - If **None** (or `None` at position `i` of the list): **no order is asserted** on that
     fiber. `R_i` is treated as an antichain (a disjoint union of points); all local DAG
     construction and `gpav_seg` steps are skipped and the fiber feeds `n_i` singleton
@@ -141,11 +141,17 @@ if __name__ == "__main__":
 - **`segment_topo_orders`** *(List[Optional[List[int]]], default=None)*:  
   Custom topological orders for each fiber. Useful for controlling GPAV processing order.
 
-- **`use_trend_following_first`** *(bool, default=True)*:  
-  Use trend-following heuristic for local GPAV (Stage 1). Improves performance on structured data.
+- **`variant`** *(str, default="default")*:  
+  `"default"`, `"review"` or `"fast"`. See [Variants](#variants) below.
 
-- **`use_trend_following_blocks`** *(bool, default=True)*:  
-  Use trend-following for global block GPAV (Stage 2).
+- **`weights`** *(array of length N, default=None)*:  
+  Positive weight of each observation, aligned with `Y` (default: all 1). The fit minimises `sum_k weights[k] * (u[k] - Y[k])**2`.
+
+- **`use_trend_following_first`** *(bool or None, default=None)*:  
+  Order inside each fiber (Stage 1). None/True: trend-following (LowerY, or its DFS approximation in `"fast"`). False: a plain topological sort that ignores Y. Not allowed with `variant="review"`.
+
+- **`use_trend_following_blocks`** *(bool or None, default=None)*:  
+  Order on the block graph (Stage 2). None/True: trend-following. False: Kahn's topological sort with ties broken by block id, cheaper on very large block graphs but less accurate (and it breaks the gateway of `"fast"`). Not allowed with `variant="review"`.
 
 - **`max_workers`** *(int, default=None)*:  
   Number of parallel workers for fiber processing. If None, uses CPU count. Set to 1 for sequential execution.
@@ -274,12 +280,87 @@ if __name__ == "__main__":
     main()
 ```
 
+## Variants
+
+`OperadicGPAV(..., variant=...)` selects one of three versions. All three return a fit that satisfies every constraint of `P = Q(R_1, ..., R_m)`; they differ in the greedy path GPAV takes, and therefore in accuracy, time and memory.
+
+| | `"default"` | `"review"` | `"fast"` |
+|---|---|---|---|
+| Intended for | normal use | researchers comparing with GPAV / SB-GPAV | limited time or memory |
+| Stage 1 order (inside each fiber) | LowerY | LowerY | DFS approximation of LowerY |
+| Stage 2 order (block graph) | LowerY | LowerY | DFS approximation of LowerY |
+| Q-edge `i -> j` in the block graph | every max-block of `R_i` to every min-block of `R_j`, or through one weight-0 gateway node when that needs fewer edges | same as default | always through one weight-0 gateway node |
+| Can the orders be overridden? | yes | no (locked) | yes |
+| Fits | identical to the original release in every test (see Gateway) | identical to default | may be slightly less accurate |
+
+Shared by all three: input validation (empty fibers, `Y` length, repeated rows), the incremental DAG builder, and per-fiber slicing of `Y` for the parallel workers.
+
+**LowerY** is the trend-following order of Sysoev, Burdakov & Grimvall (2011), Algorithm 5: process observations in increasing `Y` while respecting the partial order, always taking the smallest-`Y` remaining ancestor first. It runs with an explicit stack, so there is no recursion limit; its cost grows quadratically with the size of the graph it is applied to.
+
+**DFS** also starts from the `Y`-sorted sequence but follows parent links branch by branch, which makes it nearly linear. Among the ancestors of a node it can place a high-`Y` element before a low-`Y` one, so the fit is usually slightly worse.
+
+**Gateway.** A Q-edge means every block of `R_i` lies below every block of `R_j`. With `a` maximal blocks in `R_i` and `b` minimal blocks in `R_j`, this can be written as `a * b` edges, or routed through one weight-0 node with `a + b` edges. The constraints are the same and the gateway never enters an average, but GPAV absorbs it into the first successor it processes, so the order of Stage 2 matters:
+
+- With LowerY in Stage 2 (default, review), the gateway did not change the fit in any test: 22,456 instances over many poset families, including nested lexicographic sums, Boolean lattices, very thick and very large `Q` (`gateway_exploration_2026-10-09.md`). This is an empirical observation, not a proof. Default and review use it only on Q-edges where it saves edges, `a * b > a + b`, i.e. never when `a = 1` or `b = 1` (for example a fiber with a greatest or a least element, or any chain) and not when `a = b = 2`. Elsewhere the extra node only costs time: on a very thick `Q` with compressible fibers, always using it was 5x slower.
+- With DFS in Stage 2 (fast), the gateway changes about 4% of fits; fast uses it on every Q-edge.
+- With a `Y`-blind order in Stage 2 it can pool incomparable blocks, so default switches it off when `use_trend_following_blocks=False`.
+
+### Measured accuracy
+
+Against the exact isotonic regression (CVXPY/Clarabel), 500 random instances over five shapes of `Q` (chain, tree, diamond, fan-in, random), 4-7 fibers of 2-13 points in 1-3 dimensions:
+
+| | optimal fit | mean excess SSE / TSS | worst |
+|---|---|---|---|
+| `"default"` / `"review"` | 463/500 | 1.3e-4 | 1.9% |
+| `"fast"` | 435/500 | 3.7e-4 | 1.9% |
+| for reference: Kahn order in Stage 2 | 380/500 | 1.4e-3 | 9.6% |
+
+### Measured cost
+
+Fibers that GPAV cannot compress (antichain fibers under a chain `Q`, 200 points each), `max_workers=1`:
+
+| | m = 10 (N = 2,000) | m = 20 (N = 4,000) |
+|---|---|---|
+| `"default"` | 8.9 s, 3.5 MB peak | 31.7 s, 7.0 MB peak |
+| `"fast"` | 3.2 s, 3.5 MB peak | 5.3 s, 6.7 MB peak |
+
+Without the gateway (writing every Q-edge as `a * b` edges) default took 42 s / 84 MB and 231 s / 177 MB on the same inputs.
+
+On compressible data the difference is small: 8 fibers of 300 points under a tree `Q` (N = 2,400) took 4.2 s with default and 2.8 s with fast.
+
+**Rule of thumb:** use `"default"`. Switch to `"fast"` when the inputs are very large or time is tight; LowerY is quadratic in the number of blocks that reach Stage 2.
+
+### Benchmarking against SB-GPAV (`"review"`)
+
+`utils/review.py` runs both algorithms under the same rules:
+
+- the same DAG builder, GPAV core and LowerY implementation;
+- first order: LowerY over all N elements of the lexicographic sum for SB-GPAV (Algorithm 4, step 1), LowerY per fiber for OperadicGPAV;
+- second order (block graph): LowerY for both. The SB paper allows any topological order in this step; LowerY is the more accurate choice, so SB-GPAV is run in its best form.
+- OperadicGPAV may route a Q-edge through a gateway node (as in default). This is part of OperadicGPAV's own construction of the block graph, which SB-GPAV does not have; in every test it left OperadicGPAV's fit unchanged.
+
+```python
+from utils.review import compare_review
+res = compare_review(Q, R_datasets, Y)          # n_segments defaults to m
+res["sse_ogpav"], res["sse_sb"], res["time_ogpav"], res["time_sb_parts"]
+```
+
+Example, tree `Q` with 8 fibers of 2-D points, `max_workers=1`:
+
+| N | OperadicGPAV | SB-GPAV (Hasse of P + LowerY on P + SB) | SSE / TSS (OGPAV, SB) |
+|---|---|---|---|
+| 800 | 0.17 s | 0.33 s (0.13 + 0.11 + 0.10) | 0.3528, 0.3526 |
+| 1,600 | 0.49 s | 1.28 s (0.51 + 0.49 + 0.28) | 0.4032, 0.4044 |
+| 3,200 | 1.60 s | 5.34 s (2.15 + 2.19 + 1.00) | 0.4053, 0.4060 |
+
+Timings are from one machine and indicative only.
+
 ## Running tests
 
 Run tests from the project root:
 
 ```bash
-python -m tests.gpav_test
+python -m pytest tests/
 ```
 
 ## Plot the artificial dataset
@@ -319,6 +400,20 @@ plot_3d(X, y, title="nonlinear + normal noise")
 ## Notes on correctness
 
 All algorithms assume acyclic partial orders (posets).
+
+**A block is never its own predecessor.** The GPAV update `B_k^- = B_j^- U B_k^- \ {j}` (Burdakov, Grimvall & Sysoev 2006) does not remove `k`. In exact arithmetic `k` cannot re-enter its own predecessor list, but floating-point rounding of a weighted average can push a block value just above equal inputs and let `k` re-enter through a diamond (`j1 < j2 < k`). Before the fix `k` then "violated" itself, was merged into itself and deleted (`KeyError` in `gpav_seg`). The code now removes `k` as well, which matches the paper's definition of `B_k^-` (the blocks adjacent to `B_k`). It was found with weights in a randomized exploration and never in 390,824 unweighted runs; results that did not crash are unchanged (10,000 runs compared bit for bit).
+
+**Repeated rows.** A fiber must not contain the same point twice: equal rows compare both ways, so the input is not a poset and OperadicGPAV raises a `ValueError`. Equal rows must receive equal fitted values, so merging each group of repeated rows into one row whose `Y` is the weighted mean of the group, with the group's total weight (its size, if all weights are 1) passed in `weights`, gives a problem with the same optimal solution as the original data; every copy then takes the fitted value of its group. OperadicGPAV does not merge rows itself, so that the user decides how repeated rows are treated.
+
+```python
+import numpy as np
+uniq, inv = np.unique(R_i, axis=0, return_inverse=True)      # one fiber
+inv = inv.ravel()
+counts = np.bincount(inv)
+Y_i_merged = np.bincount(inv, weights=Y_i) / counts           # mean Y per group
+# ... call OperadicGPAV with uniq as the fiber, Y_i_merged and weights=counts,
+# then u_i = u_merged[inv] gives the fit for the original rows
+```
 
 Please index the nodes of `R_i` with indices from `0` to `n_i - 1`.
 ## Authors

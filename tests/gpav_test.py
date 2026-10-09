@@ -1132,8 +1132,16 @@ class TestNoRecursionLimit:
         """Depth is the longest chain; the iterative DFS must not care."""
         n = 20000
         G = nx.DiGraph((i, i + 1) for i in range(n - 1))
-        order = trend_following_order(G=G, Y={i: float(n - i) for i in G.nodes()})
+        order = trend_following_order(G=G, Y={i: float(n - i) for i in G.nodes()}, sparse_data=True)
         assert len(order) == n
+
+    def test_deep_chain_lower_y(self):
+        """LowerY (the default) is iterative too. Reversed Y on a chain is its worst
+        case (quadratic), so the size is kept moderate: ~3 s for n = 3000."""
+        n = 3000
+        G = nx.DiGraph((i, i + 1) for i in range(n - 1))
+        order = trend_following_order(G=G, Y={i: float(n - i) for i in G.nodes()})
+        assert order == list(range(n))
  
  
 # ---------------------------------------------------------------------
@@ -1197,8 +1205,8 @@ class TestFeasibility:
 
 
  
-class TestFastMode:
-    """fast_mode routes each Q-edge through one weight-0 gateway node instead of
+class TestFastVariant:
+    """variant="fast" routes each Q-edge through one weight-0 gateway node instead of
     the complete bipartite graph max(i) x min(j).  Same constraint set, smaller
     graph, different greedy path.
  
@@ -1230,17 +1238,17 @@ class TestFastMode:
         return Q
  
     def test_default_is_off(self):
-        """A caller who never mentions fast_mode must get the exact form."""
+        """A caller who never mentions the variant must get variant='default'."""
         rng = np.random.default_rng(0)
         R = [rng.random((12, 2)) + 3.0 * k for k in range(4)]
         Q = self._random_Q(rng, 4, "chain")
         Y = rng.normal(size=48)
         a = OperadicGPAV(Q=Q, R_datasets=R, Y=Y, assume_component_wise=True, max_workers=1)
         b = OperadicGPAV(Q=Q, R_datasets=R, Y=Y, assume_component_wise=True,
-                         max_workers=1, fast_mode=False)
+                         max_workers=1, variant="default")
         np.testing.assert_array_equal(a, b)
  
-    def test_fast_mode_is_feasible(self):
+    def test_fast_variant_is_feasible(self):
         """The gateway must preserve the constraint set on every Q shape.
         This is the strong invariant: it holds unconditionally."""
         rng = np.random.default_rng(5)
@@ -1253,9 +1261,9 @@ class TestFastMode:
                 R = [rng.random((int(rng.integers(2, 9)), 2)) for _ in range(m)]
                 Y = rng.normal(size=sum(len(r) for r in R))
                 u = OperadicGPAV(Q=Q, R_datasets=R, Y=Y, assume_component_wise=True,
-                                 max_workers=1, fast_mode=True)
+                                 max_workers=1, variant="fast")
                 assert not _violations(_full_poset(Q, R), u), \
-                    f"fast_mode produced an infeasible fit on a {style} Q"
+                    f"variant=fast produced an infeasible fit on a {style} Q"
  
     def test_gateway_carries_no_mass(self):
         """weight=0 means the gateway never enters an average.  If it did, the
@@ -1269,12 +1277,12 @@ class TestFastMode:
             R = [rng.random((int(rng.integers(3, 10)), 2)) for _ in range(m)]
             Y = rng.normal(size=sum(len(r) for r in R))
             u = OperadicGPAV(Q=Q, R_datasets=R, Y=Y, assume_component_wise=True,
-                             max_workers=1, fast_mode=True)
+                             max_workers=1, variant="fast")
             assert u.sum() == pytest.approx(Y.sum(), abs=1e-9), \
                 "gateway leaked mass into the fit"
  
     def test_deviation_from_exact_is_bounded(self):
-        """fast_mode may reach a different feasible optimum, but not a wild one.
+        """variant="fast" may reach a different feasible optimum, but not a wild one.
         Observed worst over 565 random instances: 1.6% of the total sum of
         squares.  The bound below leaves ~6x headroom."""
         rng = np.random.default_rng(31337)
@@ -1290,18 +1298,18 @@ class TestFastMode:
             if tss < 1e-9:
                 continue
             kw = dict(Q=Q, R_datasets=R, Y=Y, assume_component_wise=True, max_workers=1)
-            a, b = OperadicGPAV(**kw), OperadicGPAV(fast_mode=True, **kw)
+            a, b = OperadicGPAV(**kw), OperadicGPAV(variant="fast", **kw)
             worst = max(worst, abs(sse(b, Y) - sse(a, Y)) / tss)
-        assert worst < 0.10, f"fast_mode deviated by {worst:.4f} of TSS from the exact form"
+        assert worst < 0.10, f"variant=fast deviated by {worst:.4f} of TSS from the exact form"
 
 
-    def test_fast_mode_emits_the_predicted_edge_count(self, capsys):
+    def test_fast_variant_emits_the_predicted_edge_count(self, capsys):
         """Measure the saving directly instead of via tracemalloc.
  
         tracemalloc's peak includes numpy buffers, pickles and gpav_seg's own
         structures, so the RATIO between the two modes depends on interpreter
         allocation overhead -- it shifted enough between CPython 3.11 and 3.14
-        to break a >=50% assertion even though fast_mode still cut memory by 46%.
+        to break a >=50% assertion even though variant="fast" still cut memory by 46%.
         The edge count is exact and interpreter-independent.
  
         For a fiber that is a pure antichain every element is its own block and
@@ -1321,16 +1329,16 @@ class TestFastMode:
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 OperadicGPAV(Q=Q, R_datasets=R, Y=Y, assume_component_wise=True,
-                             max_workers=1, fast_mode=True, verbose=True)
-            line = [l for l in buf.getvalue().splitlines() if "fast_mode:" in l]
-            assert line, "fast_mode did not report its gateway count under verbose=True"
+                             max_workers=1, variant="fast", verbose=True)
+            line = [l for l in buf.getvalue().splitlines() if "gateway:" in l]
+            assert line, "variant=fast did not report its gateway count under verbose=True"
             gateways, avoided = map(int, re.search(r"(\d+) gateway nodes, (\d+)",
                                                    line[0]).groups())
             assert gateways == m - 1, f"expected {m-1} gateways, got {gateways}"
             assert avoided == (m - 1) * (ni * ni - 2 * ni), \
                 f"expected {(m-1)*(ni*ni-2*ni)} edges avoided, got {avoided}"
  
-    def test_fast_mode_reduces_memory(self):
+    def test_fast_variant_reduces_memory(self):
         """Softer companion to the edge-count test: the peak must go DOWN.
  
         Deliberately not a ratio -- see the docstring above for why a ratio is
@@ -1344,14 +1352,22 @@ class TestFastMode:
         Q.add_edges_from((i, i + 1) for i in range(m - 1))
         Y = np.random.default_rng(0).normal(size=m * ni)
         import tracemalloc
+        import OperadicGPAV as og
         peaks = []
-        for fm in (False, True):
-            tracemalloc.start()
-            OperadicGPAV(Q=Q, R_datasets=R, Y=Y, assume_component_wise=True,
-                         max_workers=1, fast_mode=fm)
-            peaks.append(tracemalloc.get_traced_memory()[1])
-            tracemalloc.stop()
-        assert peaks[1] < peaks[0], f"fast_mode did not reduce peak memory: {peaks}"
+        # compare fast with the product-edge form (default itself now also uses the
+        # gateway on uncompressible fibers, see VARIANTS["default"]["gateway"] == "auto")
+        saved = og.VARIANTS["default"]["gateway"]
+        try:
+            for fm in (False, True):
+                og.VARIANTS["default"]["gateway"] = False
+                tracemalloc.start()
+                OperadicGPAV(Q=Q, R_datasets=R, Y=Y, assume_component_wise=True,
+                             max_workers=1, variant=("fast" if fm else "default"))
+                peaks.append(tracemalloc.get_traced_memory()[1])
+                tracemalloc.stop()
+        finally:
+            og.VARIANTS["default"]["gateway"] = saved
+        assert peaks[1] < peaks[0], f"variant=fast did not reduce peak memory: {peaks}"
 
 
 if __name__ == "__main__":
