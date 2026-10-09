@@ -217,6 +217,16 @@ def gpav_seg(
 
             if j in B_k_minus:
                 B_k_minus.remove(j) # taking out {j}
+            # A block is never its own predecessor: B_k^- is the set of blocks adjacent
+            # to B_k (Burdakov, Grimvall & Sysoev 2006), so the update is
+            # B_k^- = (B_j^- U B_k^-) minus {j, k}. The paper writes only "minus {j}";
+            # in exact arithmetic k cannot re-enter, but floating-point rounding of a
+            # weighted average (it can land just above equal inputs) lets it re-enter
+            # through a diamond (j1 < j2 < k, both predecessors of k). k then
+            # "violated" itself under >=, merged into itself and was deleted
+            # (KeyError). In runs that did not crash k never appears here, so this
+            # line does not change any result that worked before.
+            B_k_minus.discard(k)
 
             # Inverse-index rewiring (efficient): for all i with j in B_i^-, replace j by k
             affected = rev_pred.get(j)
@@ -490,6 +500,16 @@ def gpav_op(
 
             if j in B_k_minus:
                 B_k_minus.remove(j) # taking out {j}
+            # A block is never its own predecessor: B_k^- is the set of blocks adjacent
+            # to B_k (Burdakov, Grimvall & Sysoev 2006), so the update is
+            # B_k^- = (B_j^- U B_k^-) minus {j, k}. The paper writes only "minus {j}";
+            # in exact arithmetic k cannot re-enter, but floating-point rounding of a
+            # weighted average (it can land just above equal inputs) lets it re-enter
+            # through a diamond (j1 < j2 < k, both predecessors of k). k then
+            # "violated" itself under >=, merged into itself and was deleted
+            # (KeyError). In runs that did not crash k never appears here, so this
+            # line does not change any result that worked before.
+            B_k_minus.discard(k)
 
             # Inverse-index rewiring (efficient): for all i with j in B_i^-, replace j by k
             affected = rev_pred.get(j)

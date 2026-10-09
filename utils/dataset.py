@@ -108,10 +108,10 @@ class CustomFiberDataset(Sequence):
         self.num_fibers = len(self._file_paths)
 
         warnings.warn(
-            "CustomFiberDataset loaded successfully. Reminder: ensure you provide "
-            "appropriate custom comparators (`f`) to `OperadicGPAV` if your custom data "
-            "requires a specific partial order relation. If `f` is omitted, the default "
-            "geometric coordinate-wise order will be assumed.",
+            "CustomFiberDataset loaded successfully. Reminder: OperadicGPAV asserts "
+            "NO order inside a fiber unless you say so. Pass `f` (a comparator per "
+            "fiber, or one for all) or assume_component_wise=True; otherwise each "
+            "fiber is treated as an antichain and only Q constrains the fit.",
             UserWarning
         )
 

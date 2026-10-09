@@ -41,6 +41,46 @@ GlobalIndex = int
 BlockId = int
 
 # ---------------------------------------------------------------------
+# Variants
+# ---------------------------------------------------------------------
+# Each variant fixes three choices. Everything else (validation, the DAG builder,
+# per-fiber Y slicing) is shared by all three.
+#
+#   stage1_dfs     : order inside each fiber R_i. False = LowerY (Algorithm 5 of
+#                    Sysoev, Burdakov & Grimvall 2011); True = DFS approximation.
+#   stage2_trend   : order on the block graph G_B. True = trend-following (LowerY,
+#                    or its DFS approximation when stage1_dfs is True); False =
+#                    Kahn's topological sort with ties broken by block id. The SB
+#                    paper allows any topological order here, but measured against
+#                    the exact optimum Kahn's order is clearly less accurate.
+#   gateway        : how a Q-edge i -> j enters G_B, with a = #max-blocks of R_i and
+#                    b = #min-blocks of R_j. False = all a*b edges max -> min.
+#                    True = through one weight-0 node (a + b edges, one node).
+#                    "auto" = the node only when it saves edges, a*b > a + b, i.e.
+#                    (a-1)(b-1) >= 2: never when a = 1 or b = 1, nor when a = b = 2.
+#                    All three variants use "auto". With LowerY in Stage 2
+#                    (default, review) the node has not changed a fit in any test
+#                    (22,456 instances; see gateway_exploration_2026-10-09.md), but
+#                    this is an empirical observation, not a proof. With DFS (fast)
+#                    it can change the fit slightly.
+#
+# The gateway is switched off whenever Stage 2 is not trend-following: the gateway node is absorbed
+# by the first of its successors that GPAV processes, after which the other
+# successors are compared against that block. Processing the lowest-Y successor
+# first (trend-following) keeps this harmless in most cases; a Y-blind order does
+# not (e.g. Q = 0->1, R_1 two incomparable points with Y = 5, 1: the gateway with
+# Kahn's order pools them to 3, 3).
+VARIANTS: Dict[str, Dict[str, bool]] = {
+    # For normal use: the paper's orderings (fits = main in every test).
+    "default": {"stage1_dfs": False, "stage2_trend": True, "gateway": "auto"},
+    # For benchmarks against GPAV / SB-GPAV: same computation as "default", but
+    # the configuration is locked (see OperadicGPAV docstring and utils/review.py).
+    "review": {"stage1_dfs": False, "stage2_trend": True, "gateway": "auto"},
+    # For limited time or memory: DFS orders in both stages.
+    "fast": {"stage1_dfs": True, "stage2_trend": True, "gateway": "auto"},
+}
+
+# ---------------------------------------------------------------------
 # External Helper: Mapping Logic
 # ---------------------------------------------------------------------
 def create_lexicographic_mapping(R_datasets: Any) -> List[List[GlobalIndex]]:
@@ -95,7 +135,9 @@ def _process_fiber_task(
     temp_dir: str,
     use_trend_following: bool,
     custom_topo_order: Optional[List[int]] = None,
-    assume_component_wise: bool = False
+    assume_component_wise: bool = False,
+    sparse_data: bool = False,
+    W_snapshot: Optional[np.ndarray] = None
 ) -> Tuple[int, int, List[BlockId], List[BlockId]]:
     """
     Worker task to process a single fiber and save result to disk.
@@ -105,7 +147,7 @@ def _process_fiber_task(
         # 1. Antichain Bypass
         if f is None:
             from utils.border_cases import package_local_antichain
-            return package_local_antichain(i, X_i, local_Y_indices, Y_snapshot, temp_dir)
+            return package_local_antichain(i, X_i, local_Y_indices, Y_snapshot, temp_dir, W_snapshot)
 
         # 2. Build Hasse from array elements
         n_i = len(X_i)
@@ -125,7 +167,7 @@ def _process_fiber_task(
         # 3. Dynamic Antichain Bypass
         if H_R.number_of_edges() == 0:
             from utils.border_cases import package_local_antichain
-            return package_local_antichain(i, X_i, local_Y_indices, Y_snapshot, temp_dir)
+            return package_local_antichain(i, X_i, local_Y_indices, Y_snapshot, temp_dir, W_snapshot)
 
         # 4. Prepare A_i (sequential node indices 0, 1, 2, ...)
         A_i = {j: float(Y_snapshot[glob_idx]) 
@@ -135,15 +177,15 @@ def _process_fiber_task(
         if custom_topo_order is not None:
             topo = custom_topo_order
         elif use_trend_following:
-            topo = trend_following_order(G=H_R, Y=A_i, stable_tiebreak=True)
+            topo = trend_following_order(G=H_R, Y=A_i, stable_tiebreak=True, sparse_data=sparse_data)
         else:
             topo = list(nx.topological_sort(H_R))
             
-        _, blocks, _ = gpav_seg(
-            Y=A_i, 
-            poset=H_R, 
-            topo_order=topo
-        )
+        if W_snapshot is None:
+            _, blocks, _ = gpav_seg(Y=A_i, poset=H_R, topo_order=topo)
+        else:
+            W_i = {j: float(W_snapshot[glob_idx]) for j, glob_idx in enumerate(local_Y_indices)}
+            _, blocks, _ = gpav_seg(Y=A_i, poset=H_R, topo_order=topo, weights=W_i)
         
         # 4. Build Block DAG using comparator (Algorithm 3 / Theorem 4)
         block_extrema = []
@@ -154,8 +196,37 @@ def _process_fiber_task(
         def check_block_prec(bi, bj):
             return _block_precedes(block_extrema[bi][0], block_extrema[bj][1], X_i, f)
         
-        G_loc = _build_dag_incrementally(list(range(len(blocks))), check_block_prec)
-        
+        try:
+            G_loc = _build_dag_incrementally(list(range(len(blocks))), check_block_prec)
+        except nx.NetworkXError:
+            # The block relation is cyclic, and by far the
+            # most common cause is repeated elements in R_i: two equal rows are mutually
+            # <= under any reflexive comparator, so the blocks holding them precede each
+            # other.  A poset must have distinct elements.
+            try:
+                _arr = np.asarray(X_i)
+                _first, _cnt = np.unique(_arr, axis=0, return_index=True, return_counts=True)[1:3]
+                _dup = _first[_cnt > 1]
+            except Exception:
+                _dup = []
+            if len(_dup):
+                raise ValueError(
+                    f"Fiber {i} contains repeated elements (e.g. the row at index "
+                    f"{_dup[:3].tolist()} occurs more than once). A poset R_i must have "
+                    "distinct elements: equal rows are mutually <=, which makes the block "
+                    "relation cyclic. To fit such data, merge each group of repeated rows "
+                    "into one row whose Y is the weighted mean of the group's Y values, and "
+                    "pass the group's total weight (its size, if all weights are 1) in "
+                    "`weights`. This gives the same fit as keeping the copies, since copies "
+                    "must receive equal fitted values."
+                ) from None
+            raise ValueError(
+                f"Fiber {i}: the comparator is not antisymmetric -- two distinct elements "
+                "x != y satisfy f(x,y) and f(y,x), so the block relation is cyclic. "
+                "That is a preorder, not a partial order. If your comparator ranks by a "
+                "key (a sum, score or index), add a tie-break to make it strict."
+            ) from None
+      
         mins = [n for n in G_loc.nodes() if G_loc.in_degree(n) == 0]
         maxs = [n for n in G_loc.nodes() if G_loc.out_degree(n) == 0]
         
@@ -183,9 +254,11 @@ def OperadicGPAV(
     indices_list: Optional[List[List[GlobalIndex]]] = None,
     segment_topo_orders: Optional[List[Optional[List[int]]]] = None,
     *,
-    use_trend_following_first: bool = True,
-    use_trend_following_blocks: bool = True,
+    use_trend_following_first: Optional[bool] = None,
+    use_trend_following_blocks: Optional[bool] = None,
     assume_component_wise: bool = False,
+    variant: str = "default",
+    weights: Optional[Union[np.ndarray, Sequence[float]]] = None,
     max_workers: Optional[int] = None,
     verbose: bool = False,
     debug: bool = False,
@@ -211,8 +284,16 @@ def OperadicGPAV(
         Comparator function(s) for partial order on R_i elements.
         
         - If single function: f(a, b) -> bool, used for ALL R_i
-        - If list of functions: [f_0, ..., f_{m-1}], one per R_i
-        - If None: defaults to coordinate-wise comparison for all R_i
+        - If list: exactly m entries [f_0, ..., f_{m-1}], one per R_i, each a
+          comparator or None. Any other length raises ValueError.
+        - If None (or None at position i in the list): NO order is asserted on
+          that fiber. R_i is taken to be an antichain — a disjoint union of
+          points — and the local DAG construction and gpav_seg are skipped
+          entirely. The fiber contributes n_i singleton blocks to Stage 2 and
+          its elements are constrained only through Q.
+          This is NOT the coordinate-wise default; pass assume_component_wise=True
+          or f=default_comparator for that. Note this differs from utils.sb_gpav,
+          where f=None does mean coordinate-wise dominance.
         
         Each f_i(a, b) should return True if a <= b in the partial order.
     
@@ -228,9 +309,65 @@ def OperadicGPAV(
         If None, all fibers use default ordering.
         
     assume_component_wise : bool, optional
-        If True, assumes R_datasets elements are given in a valid topological order 
-        respecting `f`, enabling a fast graph building path. If False (default), 
-        verifies all O(N^2) pairs for safety.
+        If True, the coordinate-wise order is used (a <= b iff a[k] <= b[k] for all k)
+        and rows are sorted internally by coordinate sum, which is a linear extension
+        of it. The DAG is then built in a single backward sweep that materialises only
+        the reduced graph — memory stays proportional to the number of covers.
+        Cannot be combined with a custom `f`: the sum-sort is a linear extension of
+        coordinate-wise dominance only.
+        If False (default), no linear extension is assumed, so all O(n_i^2) pairs are
+        tested and nx.transitive_reduction is applied. This materialises the full
+        transitive closure first (~47 MB for an 800-element chain, versus 0.6 MB
+        incrementally) and raises NetworkXError if two rows are equal.
+
+    weights : array-like of length N, optional
+        Positive weight of each observation, aligned with Y (default: all 1).
+        The fit minimises sum_k weights[k] * (u[k] - Y[k])**2. Use it, for
+        example, for aggregated data, or to fit data with repeated rows: merge
+        each group of equal rows into one row with the group's weighted mean Y
+        and its total weight. That reproduces the fit of the original data,
+        because equal rows must receive equal fitted values.
+
+    use_trend_following_first : bool or None, optional
+        Order used by GPAV inside each fiber (Stage 1). None (default) or True:
+        trend-following (LowerY for "default"/"review", its DFS approximation for
+        "fast"). False: Kahn's topological sort, ignoring Y. Not allowed with
+        variant="review".
+
+    use_trend_following_blocks : bool or None, optional
+        Order used by GPAV on the block graph (Stage 2). None (default) or True:
+        trend-following (LowerY for "default"/"review", DFS for "fast"). False:
+        Kahn's topological sort with ties broken by block id -- cheaper on very
+        large block graphs but measurably less accurate; the gateway is then
+        switched off, because with a Y-blind order it can pool incomparable
+        blocks (see VARIANTS). Not allowed with variant="review".
+
+    variant : {"default", "review", "fast"}, optional
+        Which version of the algorithm to run. All three return a fit that
+        satisfies every constraint of P = Q(R_1,...,R_m); they differ in the
+        heuristic path GPAV takes and therefore, slightly, in the fit.
+
+        "default" -- for normal use. LowerY (the paper's trend-following order,
+        Algorithm 5) in both stages: per fiber in Stage 1, on the block graph in
+        Stage 2. A Q-edge i -> j joins every max-block of R_i to every min-block
+        of R_j, except that when this needs more edges than routing through one
+        weight-0 gateway node (a*b > a+b), the gateway is used. In every test the
+        gateway left the fit unchanged under LowerY, and it removes most of the
+        cost when fibers barely compress. LowerY is quadratic in the number of
+        blocks; for very large inputs prefer "fast".
+
+        "review" -- for benchmarks against GPAV / SB-GPAV. Computes exactly what
+        "default" computes, but locks the configuration: neither order can be
+        overridden and segment_topo_orders is rejected. Use
+        utils.review.sb_gpav_review to run SB-GPAV under the same rules (LowerY
+        on the whole lexicographic sum, then LowerY on its block graph).
+
+        "fast" -- for limited time or memory; may lose some accuracy. DFS
+        approximation of LowerY in both stages, and the same per-edge gateway
+        rule as "default" (one weight-0 node for a Q-edge i -> j only when
+        |max(i)| * |min(j)| > |max(i)| + |min(j)|). With DFS the gateway can
+        change GPAV's greedy path, and DFS orders are slightly less accurate
+        than LowerY. Measured costs and benefits are in the README ("Variants").
 
     Returns
     -------
@@ -283,11 +420,20 @@ def OperadicGPAV(
         f_list = None
         f_global = f
     elif isinstance(f, (list, tuple)):
-        # List of functions, one per R_i
+        # List of functions, one per R_i. It must cover every fiber: a shorter list
+        # used to leave the remaining fibers unordered without any warning.
+        if len(f) != m:
+            raise ValueError(
+                f"f has {len(f)} entries but there are {m} fibers. Give one entry per "
+                "fiber: a comparator, or None to declare that fiber unordered (an antichain)."
+            )
+        _bad = [k for k, comp in enumerate(f) if comp is not None and not callable(comp)]
+        if _bad:
+            raise TypeError(f"f[{_bad[0]}] is neither callable nor None.")
         f_list = list(f)
         f_global = None
     else:
-        raise TypeError("f must be a callable, a list of callables, or None")
+        raise TypeError("f must be None, a callable, or a list/tuple of m callables or None")
 
     if assume_component_wise and f is not None:
         # We need to ensure that the user doesn't pass assume_component_wise=True with a custom comparator, 
@@ -301,6 +447,34 @@ def OperadicGPAV(
                 "to be correct for the default geometric component-wise comparison."
             )
     
+    # --- Resolve the variant ------------------------------------------------
+    if variant not in VARIANTS:
+        raise ValueError(f"variant must be one of {sorted(VARIANTS)}, got {variant!r}")
+    _cfg = VARIANTS[variant]
+    if variant == "review":
+        _locked = []
+        if segment_topo_orders is not None:
+            _locked.append("segment_topo_orders")
+        if use_trend_following_first is False:
+            _locked.append("use_trend_following_first=False")
+        if use_trend_following_blocks is not None:
+            _locked.append("use_trend_following_blocks")
+        if _locked:
+            raise ValueError(
+                "variant='review' uses a fixed configuration so that benchmarks are "
+                f"reproducible; remove {', '.join(_locked)} or use variant='default'."
+            )
+    if use_trend_following_first is None:
+        use_trend_following_first = True
+    if use_trend_following_blocks is None:
+        use_trend_following_blocks = _cfg["stage2_trend"]
+    sparse_data = _cfg["stage1_dfs"]
+    use_gateway = _cfg["gateway"]
+    if use_gateway == "auto" and not use_trend_following_blocks:
+        # The gateway is only harmless when Stage 2 processes low-Y successors first
+        # (trend-following). With a Y-blind order it can pool incomparable blocks.
+        use_gateway = False
+
     if indices_list is None:# Warning is best.
         warnings.warn(
             "No indices_list provided. We assume R_i corresponds to node i in Q,"+
@@ -314,6 +488,44 @@ def OperadicGPAV(
     m = len(indices_list)
     Y = np.asarray(Y)
 
+    # --- Reject empty fibers -------------------------------------------------
+    # A lexicographic sum Q(R_1,...,R_t) is only defined for NONEMPTY R_i
+    # (Schroder, Ordered Sets, Def. 7.1).  An empty fiber contributes no blocks,
+    # so the Q-edges into and out of it silently vanish in Pass 2 -- and because
+    # H_Q is the transitive reduction, no edge remains to carry the constraint
+    # across it.  The result would be a plausible but non-monotone fit.
+  
+    _empty = [i for i in range(m) if len(indices_list[i]) == 0]
+    if _empty:
+        raise ValueError(
+            f"Fiber(s) {_empty} are empty. The lexicographic sum Q(R_1,...,R_t) is "
+            "only defined for nonempty R_i. Remove these nodes from Q and reconnect "
+            "each of their predecessors to each of their successors, then drop the "
+            "corresponding entries from R_datasets and indices_list."
+        )
+
+    # --- Validate Y length ---------------------------------------------------
+    # Too short raises a bare IndexError deep inside Stage 1; too long is worse,
+    # since u_final_global is sized from len(Y) and the unmapped tail is returned
+    # as zeros that are indistinguishable from fitted values.
+    _mapped = sum(len(ix) for ix in indices_list)
+    if len(Y) != _mapped:
+        raise ValueError(
+            f"Y has length {len(Y)} but the fibers account for {_mapped} elements. "
+            "Y must have exactly one entry per element of the lexicographic sum "
+            "(N = sum of the fiber sizes)."
+        )
+
+    # --- Validate weights -----------------------------------------------------
+    if weights is not None:
+        weights = np.asarray(weights, dtype=float)
+        if weights.ndim != 1 or len(weights) != len(Y):
+            raise ValueError(
+                f"weights must be a 1-D array with one entry per element of Y "
+                f"(length {len(Y)}), got shape {weights.shape}."
+            )
+        if not np.all(np.isfinite(weights)) or np.any(weights <= 0):
+            raise ValueError("weights must be finite and strictly positive.")
     # Prepare Temp Directory
     if temp_dir is None:
         temp_dir_obj = tempfile.TemporaryDirectory(prefix="ogpav_intermediary_")
@@ -336,6 +548,8 @@ def OperadicGPAV(
                 segment_topo_orders=segment_topo_orders,
                 use_trend_following_first=use_trend_following_first,
                 assume_component_wise=assume_component_wise,
+                sparse_data=sparse_data,
+                weights=weights,
                 max_workers=max_workers,
                 verbose=verbose
             )
@@ -362,7 +576,7 @@ def OperadicGPAV(
                 return default_comparator
                 
             if f_list is not None:
-                return f_list[i] if i < len(f_list) else None
+                return f_list[i]  # length checked in OperadicGPAV: one entry per fiber
             else:
                 return f_global
 
@@ -406,7 +620,8 @@ def OperadicGPAV(
                 custom_order_i = segment_topo_orders[i] if segment_topo_orders and i < len(segment_topo_orders) else None
                 
                 _, count, mins, maxs = _process_fiber_task(
-                    i, X_i, idxs, Y, f_i, temp_dir_path, use_trend_following_first, custom_order_i, assume_component_wise
+                    i, X_i, list(range(len(idxs))), Y[idxs], f_i, temp_dir_path, use_trend_following_first, custom_order_i, assume_component_wise, sparse_data,
+                    None if weights is None else weights[idxs]
                 )
                 block_counts[i] = count
                 group_min_blocks[i] = mins
@@ -428,7 +643,8 @@ def OperadicGPAV(
                     custom_order_i = segment_topo_orders[i] if segment_topo_orders and i < len(segment_topo_orders) else None
                     fut = executor.submit(
                         _process_fiber_task,
-                        i, X_i, idxs, Y, f_i, temp_dir_path, use_trend_following_first, custom_order_i, assume_component_wise
+                        i, X_i, list(range(len(idxs))), Y[idxs], f_i, temp_dir_path, use_trend_following_first, custom_order_i, assume_component_wise, sparse_data,
+                        None if weights is None else weights[idxs]
                     )
                     futures[fut] = i
                 
@@ -457,7 +673,8 @@ def OperadicGPAV(
                             custom_order_i = segment_topo_orders[ni] if segment_topo_orders and ni < len(segment_topo_orders) else None
                             new_fut = executor.submit(
                                 _process_fiber_task,
-                                ni, nX_i, nidxs, Y, f_i, temp_dir_path, use_trend_following_first, custom_order_i, assume_component_wise
+                                ni, nX_i, list(range(len(nidxs))), Y[nidxs], f_i, temp_dir_path, use_trend_following_first, custom_order_i, assume_component_wise, sparse_data,
+                                None if weights is None else weights[nidxs]
                             )
                             futures[new_fut] = ni
                         except StopIteration:
@@ -506,23 +723,59 @@ def OperadicGPAV(
             del blocks, G_loc
                 
         # Pass 2: Inter edges (from Q)
-        for i, j in H_Q.edges():
-            for u_loc in group_max_blocks[i]:
+        if use_gateway is False:
+            # Exact form: the complete bipartite graph max(i) x min(j).
+            for i, j in H_Q.edges():
+                for u_loc in group_max_blocks[i]:
+                    for v_loc in group_min_blocks[j]:
+                        u_glob = u_loc + offsets[i]
+                        v_glob = v_loc + offsets[j]
+                        G_B.add_edge(u_glob, v_glob)
+        else:
+            # Gateway form: one weight-0 Steiner node per Q-edge.  Same
+            # reachability, |max(i)| + |min(j)| edges instead of the product.
+            # Its value is set above every real block value so that nothing is a
+            # violator at its own turn: it stays a singleton and forwards its
+            # whole predecessor set downstream when a successor absorbs it.
+            _gw_top = float(np.max(Y_blocks)) + 1.0 if total_blocks else 0.0
+            _gw_values = []
+            _saved = 0
+            for i, j in H_Q.edges():
+                a_, b_ = len(group_max_blocks[i]), len(group_min_blocks[j])
+                if use_gateway == "auto" and (a_ - 1) * (b_ - 1) < 2:
+                    # a*b <= a+b: the node would not save edges, use them directly
+                    for u_loc in group_max_blocks[i]:
+                        for v_loc in group_min_blocks[j]:
+                            G_B.add_edge(u_loc + offsets[i], v_loc + offsets[j])
+                    continue
+                g = total_blocks + len(_gw_values)
+                _gw_values.append(_gw_top)
+                G_B.add_node(g)
+                for u_loc in group_max_blocks[i]:
+                    G_B.add_edge(u_loc + offsets[i], g)
                 for v_loc in group_min_blocks[j]:
-                    u_glob = u_loc + offsets[i]
-                    v_glob = v_loc + offsets[j]
-                    G_B.add_edge(u_glob, v_glob)
-                    
+                    G_B.add_edge(g, v_loc + offsets[j])
+                _saved += (len(group_max_blocks[i]) * len(group_min_blocks[j])
+                           - len(group_max_blocks[i]) - len(group_min_blocks[j]))
+            if _gw_values:
+                Y_blocks = np.concatenate([Y_blocks, np.asarray(_gw_values, dtype=float)])
+                W_blocks = np.concatenate([W_blocks, np.zeros(len(_gw_values))])
+            if verbose:
+                print(f"  gateway: {len(_gw_values)} gateway nodes, "
+                      f"{max(_saved, 0)} inter-fiber edges avoided.")
         # 4. Global GPAV
         if verbose:
             print("Running Global GPAV on G_B...")
             
 
         if use_trend_following_blocks:
-            Y_map = {i: Y_blocks[i] for i in range(total_blocks)}
-            topo_B = trend_following_order(G=G_B, Y=Y_map)
+            # len(Y_blocks), not total_blocks: gateway nodes carry values too
+            Y_map = {i: Y_blocks[i] for i in range(len(Y_blocks))}
+            topo_B = trend_following_order(G=G_B, Y=Y_map, sparse_data=sparse_data)
         else:
-            topo_B = list(nx.topological_sort(G_B))
+            # Kahn's algorithm, ties broken by block id: independent of insertion
+            # order and of the networkx version.
+            topo_B = list(nx.lexicographical_topological_sort(G_B))
             
         u_blocks, _, _ = gpav_seg(
             Y=Y_blocks, 

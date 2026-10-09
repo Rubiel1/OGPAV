@@ -28,7 +28,9 @@ def handle_q_no_edges(
     use_trend_following_first: bool,
     assume_component_wise: bool,
     max_workers: int,
-    verbose: bool
+    verbose: bool,
+    sparse_data: bool = False,
+    weights: Optional[np.ndarray] = None
 ) -> np.ndarray:
     """
     Fast-path for when the outer poset Q has absolutely no edges (or is m=1).
@@ -62,7 +64,7 @@ def handle_q_no_edges(
                 return default_comparator
                 
             if f_list is not None:
-                return f_list[i] if i < len(f_list) else None
+                return f_list[i]  # length checked in OperadicGPAV: one entry per fiber
             else:
                 return f_global
 
@@ -98,7 +100,8 @@ def handle_q_no_edges(
                 f_i = _get_comparator(i)
                 custom_order_i = segment_topo_orders[i] if segment_topo_orders and i < len(segment_topo_orders) else None
                 _process_fiber_task(
-                    i, X_i, idxs, Y, f_i, temp_dir_path, use_trend_following_first, custom_order_i, assume_component_wise
+                    i, X_i, list(range(len(idxs))), Y[idxs], f_i, temp_dir_path, use_trend_following_first, custom_order_i, assume_component_wise, sparse_data,
+                    None if weights is None else weights[idxs]
                 )
                 
                 # Immediately map results back
@@ -125,7 +128,8 @@ def handle_q_no_edges(
                     custom_order_i = segment_topo_orders[i] if segment_topo_orders and i < len(segment_topo_orders) else None
                     fut = executor.submit(
                         _process_fiber_task,
-                        i, X_i, idxs, Y, f_i, temp_dir_path, use_trend_following_first, custom_order_i, assume_component_wise
+                        i, X_i, list(range(len(idxs))), Y[idxs], f_i, temp_dir_path, use_trend_following_first, custom_order_i, assume_component_wise, sparse_data,
+                        None if weights is None else weights[idxs]
                     )
                     futures[fut] = (i, idxs)
                     
@@ -152,7 +156,8 @@ def handle_q_no_edges(
                             custom_order_i = segment_topo_orders[ni] if segment_topo_orders and ni < len(segment_topo_orders) else None
                             new_fut = executor.submit(
                                 _process_fiber_task,
-                                ni, nX_i, nidxs, Y, f_i, temp_dir_path, use_trend_following_first, custom_order_i, assume_component_wise
+                                ni, nX_i, list(range(len(nidxs))), Y[nidxs], f_i, temp_dir_path, use_trend_following_first, custom_order_i, assume_component_wise, sparse_data,
+                                None if weights is None else weights[nidxs]
                             )
                             futures[new_fut] = (ni, nidxs)
                         except StopIteration:
@@ -168,7 +173,8 @@ def package_local_antichain(
     X_i: Any,
     local_Y_indices: List[int],
     Y_snapshot: np.ndarray,
-    temp_dir: str
+    temp_dir: str,
+    W_snapshot: Optional[np.ndarray] = None
 ) -> tuple[int, int, list[int], list[int]]:
     """
     Fast-path for a local fiber that is definitively an antichain (disjoint points).
@@ -183,7 +189,7 @@ def package_local_antichain(
         # A 1-element block
         b = {
             'value': val,
-            'weight': 1.0, # single point weight
+            'weight': 1.0 if W_snapshot is None else float(W_snapshot[global_idx]),
             'labels': [local_idx],
             'elements': [local_idx]
         }

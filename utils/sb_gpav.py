@@ -175,6 +175,7 @@ def sb_gpav(
     weights: Optional[ArrayLike] = None,
     n_segments: int = 10,
     assume_component_wise: bool = False,
+    block_order: str = "kahn",
     verbose: bool = False,
     debug: bool = False
 ) -> Union[np.ndarray, Tuple[np.ndarray, Dict]]:
@@ -185,7 +186,20 @@ def sb_gpav(
     ----------
     X : np.ndarray
         Dataset array of shape (N, d) where N is number of elements.
+    L : list of int
+        Topological order of all N elements (Algorithm 4, step 1). Segments are
+        consecutive slices of L, and GPAV inside a segment follows L. The paper
+        recommends the trend-following order (Algorithm 5); see
+        utils.trend_following.trend_following_order.
+    block_order : {"kahn", "kahn_lex", "trend"}
+        Topological order on the block graph in the assembly stage (Algorithm 4,
+        step 3, "any topological order"). "kahn": nx.topological_sort (original
+        behaviour). "kahn_lex": the same algorithm with ties broken by block id.
+        "trend": LowerY on the block values, as OperadicGPAV uses in Stage 2
+        (used by utils.review.sb_gpav_review).
     """
+    if block_order not in ("kahn", "kahn_lex", "trend"):
+        raise ValueError(f"block_order must be 'kahn', 'kahn_lex' or 'trend', got {block_order!r}")
     
     # 0. Setup
     N = len(Y)
@@ -271,7 +285,15 @@ def sb_gpav(
     Y_blocks = np.array([b.value for b in all_blocks])
     W_blocks = np.array([b.weight for b in all_blocks])
     
-    block_topo = list(nx.topological_sort(G_blocks))
+    if block_order == "trend":
+        from .trend_following import trend_following_order
+        G_blocks.add_nodes_from(range(B_total))
+        block_topo = trend_following_order(
+            G=G_blocks, Y={i: float(Y_blocks[i]) for i in range(B_total)}, sparse_data=False)
+    elif block_order == "kahn_lex":
+        block_topo = list(nx.lexicographical_topological_sort(G_blocks))
+    else:
+        block_topo = list(nx.topological_sort(G_blocks))
     
     u_blocks_fitted, _, _ = gpav_seg(
         Y=Y_blocks,

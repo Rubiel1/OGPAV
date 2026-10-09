@@ -34,24 +34,28 @@ def _build_dag_incrementally(
         
         for idx_j in range(N_subset):
             j = indices[idx_j]
-            current_parents = []
+            # `blocked` = nodes already known to reach a chosen parent of j, so an
+            # edge from them to j would be transitively redundant. Maintaining it
+            # incrementally replaces the per-candidate nx.has_path() traversal.
+            blocked = set()
             
             # Scan backwards to find immediate predecessors
             for idx_i in range(idx_j - 1, -1, -1):
                 i = indices[idx_i]
                 
+                if i in blocked:
+                    continue
+                
                 if precedes_func(i, j):
-                    # Redundancy check:
-                    # Is i an ancestor of any node already found as a parent of j?
-                    is_redundant = False
-                    for p in current_parents:
-                        if nx.has_path(G, i, p):
-                            is_redundant = True
-                            break
-                    
-                    if not is_redundant:
-                        G.add_edge(i, j)
-                        current_parents.append(i)
+                    G.add_edge(i, j)
+                    # every ancestor of i also reaches j through i
+                    stack = [i]
+                    while stack:
+                        x = stack.pop()
+                        for w in G.predecessors(x):
+                            if w not in blocked:
+                                blocked.add(w)
+                                stack.append(w)
         return G
     else:
         G = nx.DiGraph()
@@ -67,7 +71,26 @@ def _build_dag_incrementally(
                 if precedes_func(i, j):
                     G.add_edge(i, j)
                     
-        return nx.transitive_reduction(G)
+        try:
+            return nx.transitive_reduction(G)
+        except nx.NetworkXError:
+            # Diagnose only on failure.  transitive_reduction refuses a cyclic graph,
+            # and the only way this loop can produce a cycle is a relation that is not
+            # antisymmetric: two DISTINCT items u != v with precedes(u,v) and
+            # precedes(v,u).  That is a preorder, not a partial order.
+            _u = _v = None
+            for a, b in G.edges():
+                if G.has_edge(b, a):
+                    _u, _v = a, b
+                    break
+            raise nx.NetworkXError(
+                f"The supplied relation is not antisymmetric: items {_u} and {_v} are "
+                f"distinct but satisfy precedes({_u},{_v}) and precedes({_v},{_u}), so the "
+                "graph is cyclic and has no transitive reduction. A partial order requires "
+                "that only equal items compare both ways. Either the two items are in fact "
+                "duplicates (deduplicate the fiber) or the comparator ranks by a key -- a "
+                "sum, norm, score or index -- that ties them; add a tie-break to make it strict."
+            ) from None
 
 def _lower_y_naive(
     P: List[Hashable],
@@ -76,68 +99,70 @@ def _lower_y_naive(
     sort_key: Callable
 ) -> List[Hashable]:
     """
-    Naive O(N²) implementation of LowerY procedure from Algorithm 5.
-    Literal translation of the paper's pseudocode.
-    
+    LowerY procedure of Algorithm 5 (Sysoev, Burdakov & Grimvall 2011), O(N^2).
+
     Algorithm 5 LowerY procedure:
-    1. Set T = ∅
-    2. While P ≠ ∅:
+    1. Set T = empty
+    2. While P is not empty:
        2.1: Set i = P(1) and P' = Pred(i, P)
        2.2: Compute P'' = LowerY(P')
        2.3: Set T = [T, P'', i]
-       2.4: Update P by removing both i and all k ∈ P'
+       2.4: Update P by removing both i and all k in P'
     3. Return order = T
-    
+
+    The paper states LowerY recursively. A literal recursive translation nests one
+    Python call per element picked in step 2.1, so on wide graphs (many mutually
+    incomparable elements) it exceeds Python's recursion limit (~1000) and raises
+    RecursionError. This version runs the same procedure with an explicit stack of
+    pending tasks, so the output is identical to the recursive translation
+    (checked in tests) and no recursion limit applies.
+
+    Stack entries are ("seq", list) = "run LowerY on this subsequence" and
+    ("emit", i) = "append i to T". For a subsequence P with first element i we push,
+    in reverse order of execution: the rest of P, then emit i, then P' sorted by Y,
+    which reproduces T = [LowerY(P'), i, LowerY(rest)]. The pending subsequences are
+    disjoint, so the stack never holds more than |P| elements.
+
     Parameters
     ----------
     P : List[Hashable]
         Sequence of nodes sorted by Y (represents current remaining set)
     G : nx.DiGraph
-        DAG encoding partial order (edge u→v means u ≺ v)
+        DAG encoding partial order (edge u->v means u precedes v)
     Y_map : Dict[Hashable, float]
         Mapping from node to Y value
     sort_key : Callable
         Function to sort nodes (for stable ordering)
-        
+
     Returns
     -------
     List[Hashable]
         Topological order produced by LowerY
-        
+
     Complexity
     ----------
-    Time: O(|P|²) where |P| is the length of input sequence
-    Space: O(|P|) for recursion stack
+    Time: O(|P|^2) plus one ancestor search per picked element; Space: O(|P|).
     """
-    # Base case: empty set
-    if not P:
-        return []
-    
-    # Step 2.1: i = P(1) (first element, has minimal Y)
-    i = P[0]
-    
-    # Find P' = Pred(i, P): predecessors of i that are in P (TRANSITIVE predecessors)
-    # Since G might be a Hasse diagram (transitively reduced), we must find ancestors.
-    ancestors_i = nx.ancestors(G, i)
-    P_prime = [node for node in P if node in ancestors_i]
-    
-    # Step 2.2: Recursively compute P'' = LowerY(P')
-    # P' needs to be sorted by Y for the recursive call
-    P_prime_sorted = sorted(P_prime, key=sort_key)
-    P_double_prime = _lower_y_naive(P_prime_sorted, G, Y_map, sort_key)
-    
-    # Step 2.3: T = [T_previous, P'', i]
-    # We're building T incrementally through recursion
-    
-    # Step 2.4: Remove i and all k ∈ P' from P for next iteration
-    to_remove = set(P_prime) | {i}
-    P_remaining = [node for node in P if node not in to_remove]
-    
-    # Recursively process remaining P
-    T_rest = _lower_y_naive(P_remaining, G, Y_map, sort_key)
-    
-    # Return [P'', i, T_rest]
-    return P_double_prime + [i] + T_rest
+    order: List[Hashable] = []
+    stack: List[Tuple[str, Any]] = [("seq", list(P))]
+    while stack:
+        kind, item = stack.pop()
+        if kind == "emit":
+            order.append(item)
+            continue
+        if not item:
+            continue
+        # Step 2.1: i = P(1), P' = Pred(i, P) (transitive predecessors: G may be a Hasse diagram)
+        i = item[0]
+        ancestors_i = nx.ancestors(G, i)
+        P_prime = [node for node in item if node in ancestors_i]
+        # Step 2.4: what remains of P after removing i and P'
+        P_rest = [node for node in item[1:] if node not in ancestors_i]
+        # Steps 2.2-2.3, executed in the order LowerY(P'), i, LowerY(rest)
+        stack.append(("seq", P_rest))
+        stack.append(("emit", i))
+        stack.append(("seq", sorted(P_prime, key=sort_key)))
+    return order
 
 
 def default_comparator(a: Any, b: Any) -> bool:
@@ -172,7 +197,11 @@ def _lower_y_dfs(
     sort_key: Callable
 ) -> List[Hashable]:
     """
-    Optimized O((N+E) log N) DFS implementation of LowerY.
+    O((N+E) log N) DFS approximation of LowerY (used by variant="fast").
+
+    NOT equivalent to LowerY: among the ancestors of a node it follows parent
+    links branch by branch instead of always taking the smallest-Y ancestor, so
+    the resulting order (and the GPAV fit) can differ. See _lower_y_naive.
     
     This implementation uses DFS with memoization to avoid redundant work,
     making it more efficient for sparse graphs.
@@ -211,33 +240,23 @@ def _lower_y_dfs(
     # DFS Implementation of LowerY
     yielded = set()
     result = []
-    
-    # Recursion limit check (worst case depth is N)
-    import sys
-    sys.setrecursionlimit(max(sys.getrecursionlimit(), len(nodes) + 1000))
-    
-    def visit(u):
-        if u in yielded:
-            return
-            
-        # Visit unyielded parents (ancestors) in sorted order
-        # Any unyielded parent p has Y(p) >= Y(original_target) globally,
-        # so we peel them off in increasing Y order.
-        for p in rev_adj[u]:
-            if p not in yielded:
-                visit(p)
-        
-        # After dependencies are cleared, yield u
-        if u not in yielded:
-            yielded.add(u)
-            result.append(u)
-    
-    # Main Loop (mimics LowerY on the remaining set)
-    # nodes is already sorted by Y (global_order)
+
     for root in nodes:
-        if root not in yielded:
-            visit(root)
-    
+        if root in yielded:
+            continue
+        stack = [(root, iter(rev_adj[root]))]
+        while stack:
+            u, it = stack[-1]
+            for p in it:
+                if p not in yielded:
+                    stack.append((p, iter(rev_adj[p])))
+                    break
+            else:
+                stack.pop()
+                if u not in yielded:
+                    yielded.add(u)
+                    result.append(u)
+
     return result
 
 
@@ -277,12 +296,14 @@ def trend_following_order(
         If True, ties are broken deterministically using the (Y, rank) order induced
         by sorting nodes by (Y, node_as_str).
     sparse_data : bool (default=False)
-        If True, uses optimized DFS-based implementation: O((N+E) log N) time, O(N+E) space.
-        If False, uses naive implementation from paper: O(N²) time, O(N) space.
+        If False (default), runs the paper's LowerY (Algorithm 5): O(N^2) time.
+        If True, runs a DFS approximation: O((N+E) log N) time. It also starts from
+        the Y-sorted sequence, but it finishes each parent's whole ancestor branch
+        before moving to the next parent, whereas LowerY always takes the smallest-Y
+        remaining ancestor. The two orders differ on many graphs and the GPAV fit
+        is usually slightly worse with DFS, so it is used only by
+        OperadicGPAV(variant="fast"). Both implementations are iterative.
         
-        Recommendations:
-        - sparse_data=False (default): Dense graphs where E ≈ N², or unknown graph density
-        - sparse_data=True: Sparse graphs where E ≈ N or E ≈ N log N (typical for dominance orders)
 
     Output
     ------
@@ -290,7 +311,7 @@ def trend_following_order(
     
     Complexity
     ----------
-    - sparse_data=False: O(N²) time, O(N) space
+    - sparse_data=False: O(N^2) time, O(N) space
     - sparse_data=True: O((N+E) log N) time, O(N+E) space
     """
 
