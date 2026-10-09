@@ -2,12 +2,6 @@
 OGPAV is an operadic version of GPAV for data with topological information.
 
 ![Tests](https://github.com/Rubiel1/OGPAV/actions/workflows/python-package.yml/badge.svg?branch=main)
-[![OS Linux](https://img.shields.io/badge/OS-Linux-blue)](https://github.com/Rubiel1/OGPAV)
-[![OS MacOS](https://img.shields.io/badge/OS-macOS-blue)](https://pypi.org/Rubiel1/OGPAV)
-
-
-
-
 
 Based on GPAV — from
 Burdakov, Grimvall, Sysoev (2006)
@@ -157,7 +151,7 @@ if __name__ == "__main__":
   Order inside each fiber (Stage 1). None/True: trend-following (LowerY, or its DFS approximation in `"fast"`). False: a plain topological sort that ignores Y. Not allowed with `variant="review"`.
 
 - **`use_trend_following_blocks`** *(bool or None, default=None)*:  
-  Order on the block graph (Stage 2). None/True: trend-following. False: Kahn's topological sort with ties broken by block id, cheaper on very large block graphs but less accurate (and it breaks the gateway of `"fast"`). Not allowed with `variant="review"`.
+  Order on the block graph (Stage 2). None/True: trend-following. False: Kahn's topological sort with ties broken by block id, cheaper on very large block graphs but less accurate; the gateway is then switched off. Not allowed with `variant="review"`.
 
 - **`max_workers`** *(int, default=None)*:  
   Number of parallel workers for fiber processing. If None, uses CPU count. Set to 1 for sequential execution.
@@ -295,7 +289,7 @@ if __name__ == "__main__":
 | Intended for | normal use | researchers comparing with GPAV / SB-GPAV | limited time or memory |
 | Stage 1 order (inside each fiber) | LowerY | LowerY | DFS approximation of LowerY |
 | Stage 2 order (block graph) | LowerY | LowerY | DFS approximation of LowerY |
-| Q-edge `i -> j` in the block graph | every max-block of `R_i` to every min-block of `R_j`, or through one weight-0 gateway node when that needs fewer edges | same as default | always through one weight-0 gateway node |
+| Q-edge `i -> j` in the block graph | every max-block of `R_i` to every min-block of `R_j`, or through one weight-0 gateway node when that needs fewer edges | same as default | same as default |
 | Can the orders be overridden? | yes | no (locked) | yes |
 | Fits | identical to the original release in every test (see Gateway) | identical to default | may be slightly less accurate |
 
@@ -307,9 +301,9 @@ Shared by all three: input validation (empty fibers, `Y` length, repeated rows),
 
 **Gateway.** A Q-edge means every block of `R_i` lies below every block of `R_j`. With `a` maximal blocks in `R_i` and `b` minimal blocks in `R_j`, this can be written as `a * b` edges, or routed through one weight-0 node with `a + b` edges. The constraints are the same and the gateway never enters an average, but GPAV absorbs it into the first successor it processes, so the order of Stage 2 matters:
 
-- With LowerY in Stage 2 (default, review), the gateway did not change the fit in any test: 22,456 instances over many poset families, including nested lexicographic sums, Boolean lattices, very thick and very large `Q` (`gateway_exploration_2026-10-09.md`). This is an empirical observation, not a proof. Default and review use it only on Q-edges where it saves edges, `a * b > a + b`, i.e. never when `a = 1` or `b = 1` (for example a fiber with a greatest or a least element, or any chain) and not when `a = b = 2`. Elsewhere the extra node only costs time: on a very thick `Q` with compressible fibers, always using it was 5x slower.
-- With DFS in Stage 2 (fast), the gateway changes about 4% of fits; fast uses it on every Q-edge.
-- With a `Y`-blind order in Stage 2 it can pool incomparable blocks, so default switches it off when `use_trend_following_blocks=False`.
+- With LowerY in Stage 2 (default, review), the gateway did not change the fit in any test: 22,456 instances over many poset families, including nested lexicographic sums, Boolean lattices, very thick and very large `Q` (`gateway_exploration_2026-10-09.md`). This is an empirical observation, not a proof. All three variants use it only on Q-edges where it saves edges, `a * b > a + b`, i.e. never when `a = 1` or `b = 1` (for example a fiber with a greatest or a least element, or any chain) and not when `a = b = 2`. Elsewhere the extra node only costs time: on a very thick `Q` with compressible fibers, always using it was 5x slower.
+- With DFS in Stage 2 (fast), the gateway can change the fit, in either direction. Fast uses the same per-edge rule as default. Compared with fast using the gateway on every Q-edge: on the 500 instances below it changed 15 fits, all closer to the exact optimum; on 2,096 exploration instances it changed 217 fits, 114 better and 103 worse, by at most 3.3% of the total sum of squares; it was faster overall (66 s vs 83 s on the large cases, 2.2 s vs 14.6 s on a thick `Q`).
+- With a `Y`-blind order in Stage 2 it can pool incomparable blocks, so it is switched off (in every variant) when `use_trend_following_blocks=False`.
 
 ### Measured accuracy
 
@@ -318,7 +312,7 @@ Against the exact isotonic regression (CVXPY/Clarabel), 500 random instances ove
 | | optimal fit | mean excess SSE / TSS | worst |
 |---|---|---|---|
 | `"default"` / `"review"` | 463/500 | 1.3e-4 | 1.9% |
-| `"fast"` | 435/500 | 3.7e-4 | 1.9% |
+| `"fast"` | 449/500 | 2.1e-4 | 1.9% |
 | for reference: Kahn order in Stage 2 | 380/500 | 1.4e-3 | 9.6% |
 
 ### Measured cost
@@ -424,4 +418,4 @@ Y_i_merged = np.bincount(inv, weights=Y_i) / counts           # mean Y per group
 Please index the nodes of `R_i` with indices from `0` to `n_i - 1`.
 ## Authors
 
-Eric Dolores Cuenca, Susana Lopez Moreno, Jonathan Toledo Toledo, Anh Nguyen, Sangil Kim
+Eric Dolores Cuenca, Susana Lopez Moreno, Jonathan Toledo Toledo, Anh Nguyen, Sangil Kim, Jose Mendoza Cortes
