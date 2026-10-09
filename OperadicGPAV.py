@@ -58,24 +58,26 @@ BlockId = int
 #                    True = through one weight-0 node (a + b edges, one node).
 #                    "auto" = the node only when it saves edges, a*b > a + b, i.e.
 #                    (a-1)(b-1) >= 2: never when a = 1 or b = 1, nor when a = b = 2.
-#                    With LowerY in Stage 2 the node has not changed a fit in any
-#                    test (22,456 instances; see gateway_exploration_2026-10-09.md),
-#                    but this is an empirical observation, not a proof.
+#                    All three variants use "auto". With LowerY in Stage 2
+#                    (default, review) the node has not changed a fit in any test
+#                    (22,456 instances; see gateway_exploration_2026-10-09.md), but
+#                    this is an empirical observation, not a proof. With DFS (fast)
+#                    it can change the fit slightly.
 #
-# "fast" keeps trend-following in Stage 2 on purpose: the gateway node is absorbed
+# The gateway is switched off whenever Stage 2 is not trend-following: the gateway node is absorbed
 # by the first of its successors that GPAV processes, after which the other
 # successors are compared against that block. Processing the lowest-Y successor
 # first (trend-following) keeps this harmless in most cases; a Y-blind order does
 # not (e.g. Q = 0->1, R_1 two incomparable points with Y = 5, 1: the gateway with
 # Kahn's order pools them to 3, 3).
 VARIANTS: Dict[str, Dict[str, bool]] = {
-    # For normal use: the paper's orderings and exact Stage-2 edges (= main).
+    # For normal use: the paper's orderings (fits = main in every test).
     "default": {"stage1_dfs": False, "stage2_trend": True, "gateway": "auto"},
     # For benchmarks against GPAV / SB-GPAV: same computation as "default", but
     # the configuration is locked (see OperadicGPAV docstring and utils/review.py).
     "review": {"stage1_dfs": False, "stage2_trend": True, "gateway": "auto"},
-    # For limited time or memory: DFS orders and the Stage-2 gateway.
-    "fast": {"stage1_dfs": True, "stage2_trend": True, "gateway": True},
+    # For limited time or memory: DFS orders in both stages.
+    "fast": {"stage1_dfs": True, "stage2_trend": True, "gateway": "auto"},
 }
 
 # ---------------------------------------------------------------------
@@ -336,8 +338,9 @@ def OperadicGPAV(
         Order used by GPAV on the block graph (Stage 2). None (default) or True:
         trend-following (LowerY for "default"/"review", DFS for "fast"). False:
         Kahn's topological sort with ties broken by block id -- cheaper on very
-        large block graphs but measurably less accurate, and with variant="fast"
-        it breaks the gateway (see VARIANTS). Not allowed with variant="review".
+        large block graphs but measurably less accurate; the gateway is then
+        switched off, because with a Y-blind order it can pool incomparable
+        blocks (see VARIANTS). Not allowed with variant="review".
 
     variant : {"default", "review", "fast"}, optional
         Which version of the algorithm to run. All three return a fit that
@@ -360,12 +363,11 @@ def OperadicGPAV(
         on the whole lexicographic sum, then LowerY on its block graph).
 
         "fast" -- for limited time or memory; may lose some accuracy. DFS
-        approximation of LowerY in both stages, and in Stage 2 each Q-edge
-        i -> j is routed through one weight-0 gateway node
-        (|max(i)| + |min(j)| edges instead of |max(i)| * |min(j)|). The gateway
-        never enters an average, but it changes GPAV's greedy path, and DFS
-        orders are slightly less accurate than LowerY. Measured costs and
-        benefits are in the README ("Variants").
+        approximation of LowerY in both stages, and the same per-edge gateway
+        rule as "default" (one weight-0 node for a Q-edge i -> j only when
+        |max(i)| * |min(j)| > |max(i)| + |min(j)|). With DFS the gateway can
+        change GPAV's greedy path, and DFS orders are slightly less accurate
+        than LowerY. Measured costs and benefits are in the README ("Variants").
 
     Returns
     -------
@@ -466,12 +468,6 @@ def OperadicGPAV(
         use_trend_following_first = True
     if use_trend_following_blocks is None:
         use_trend_following_blocks = _cfg["stage2_trend"]
-    elif variant == "fast" and not use_trend_following_blocks:
-        warnings.warn(
-            "variant='fast' with use_trend_following_blocks=False: the Stage-2 gateway "
-            "can pool incomparable blocks when the order ignores Y. Expect a worse fit.",
-            UserWarning
-        )
     sparse_data = _cfg["stage1_dfs"]
     use_gateway = _cfg["gateway"]
     if use_gateway == "auto" and not use_trend_following_blocks:
