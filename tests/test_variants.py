@@ -74,9 +74,17 @@ def test_kahn_stage2_override_matches_main_with_kahn():
         np.testing.assert_array_equal(_run(Q, R, Y, use_trend_following_blocks=False), ref)
 
 
-def test_fast_reproduces_patchy_fast_mode():
-    for (Q, R, Y), ref in zip(_instances(), _reference("fast")):
-        np.testing.assert_array_equal(_run(Q, R, Y, variant="fast"), ref)
+def test_fast_reproduces_patchy_fast_mode_with_gateway_everywhere():
+    """fast differs from PatchY only by the per-edge gateway rule: with the gateway
+    forced onto every Q-edge (PatchY's fast_mode) it reproduces PatchY exactly."""
+    import OperadicGPAV as og
+    saved = og.VARIANTS["fast"]["gateway"]
+    try:
+        og.VARIANTS["fast"]["gateway"] = True
+        for (Q, R, Y), ref in zip(_instances(), _reference("fast")):
+            np.testing.assert_array_equal(_run(Q, R, Y, variant="fast"), ref)
+    finally:
+        og.VARIANTS["fast"]["gateway"] = saved
 
 
 # --- properties --------------------------------------------------------------
@@ -123,18 +131,27 @@ def test_wide_fiber_no_recursion_error():
         assert u.shape == Y.shape
 
 
-def test_fast_keeps_trend_following_for_the_gateway():
-    """Q = 0->1, R_1 two incomparable points, data already monotone. With the gateway
-    and a Y-blind Stage-2 order GPAV pools the two points (3, 3); with trend-following
-    in Stage 2 (the fast variant) the fit is the data itself."""
+def test_gateway_needs_trend_following():
+    """Q = 0->1, R_1 two incomparable points, data already monotone (the fit is Y).
+    A gateway with a Y-blind Stage-2 order pools the two points to (3, 3); this is
+    why the gateway is switched off whenever Stage 2 is not trend-following."""
+    import OperadicGPAV as og
     Q = nx.DiGraph([(0, 1)])
     R = [np.array([[0.0, 0.0]]), np.array([[1.0, 2.0], [2.0, 1.0]])]
     Y = np.array([0.0, 5.0, 1.0])
-    np.testing.assert_array_equal(_run(Q, R, Y, variant="fast"), Y)
-    with pytest.warns(UserWarning, match="gateway"):
-        u = OperadicGPAV(Q=Q, R_datasets=R, Y=Y, assume_component_wise=True, max_workers=1,
-                         variant="fast", use_trend_following_blocks=False, indices_list=[[0], [1, 2]])
-    np.testing.assert_array_equal(u, [0.0, 3.0, 3.0])
+    kw = dict(Q=Q, R_datasets=R, Y=Y, assume_component_wise=True, max_workers=1,
+              indices_list=[[0], [1, 2]])
+    saved = og.VARIANTS["fast"]["gateway"]
+    try:
+        og.VARIANTS["fast"]["gateway"] = True          # force the gateway (mechanism)
+        np.testing.assert_array_equal(OperadicGPAV(variant="fast", **kw), Y)
+        np.testing.assert_array_equal(
+            OperadicGPAV(variant="fast", use_trend_following_blocks=False, **kw), [0.0, 3.0, 3.0])
+    finally:
+        og.VARIANTS["fast"]["gateway"] = saved
+    # as delivered: no gateway where it saves nothing, and none with a Y-blind order
+    np.testing.assert_array_equal(OperadicGPAV(variant="fast", **kw), Y)
+    np.testing.assert_array_equal(OperadicGPAV(variant="fast", use_trend_following_blocks=False, **kw), Y)
 
 
 # --- LowerY ------------------------------------------------------------------
@@ -406,8 +423,10 @@ def test_auto_gateway_only_where_it_saves_edges():
     assert _gateway_count(chain_Q, R, Y) == 2
     # the same input with Kahn's order in Stage 2: the gateway is switched off
     assert _gateway_count(chain_Q, R, Y, use_trend_following_blocks=False) == 0
-    # fast always uses the gateway
+    # fast follows the same rule
     assert _gateway_count(chain_Q, R, Y, variant="fast") == 2
+    R1 = [np.c_[x, x] + 100 * k for k in range(3)]
+    assert _gateway_count(chain_Q, R1, np.arange(90, dtype=float), variant="fast") == 0
 
 
 @pytest.mark.parametrize("variant", ["default", "review"])
