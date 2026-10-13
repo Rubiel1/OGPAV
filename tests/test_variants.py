@@ -425,11 +425,12 @@ def test_auto_gateway_only_where_it_saves_edges():
     assert _gateway_count(chain_Q, R, Y, use_trend_following_blocks=False) == 0
     # fast follows the same rule
     assert _gateway_count(chain_Q, R, Y, variant="fast") == 2
+    assert _gateway_count(chain_Q, R, Y, variant="review") == 0
     R1 = [np.c_[x, x] + 100 * k for k in range(3)]
     assert _gateway_count(chain_Q, R1, np.arange(90, dtype=float), variant="fast") == 0
 
-
-@pytest.mark.parametrize("variant", ["default", "review"])
+#@pytest.mark.parametrize("variant", ["default", "review"])
+@pytest.mark.parametrize("variant", ["default"])
 def test_auto_gateway_same_fit_as_plain_edges(variant):
     """Empirical property (not a theorem): with LowerY in Stage 2 the gateway leaves
     the fit unchanged. Checked here against the plain-edge form, with weights."""
