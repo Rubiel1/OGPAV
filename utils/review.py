@@ -19,9 +19,7 @@ The rules, applied to both algorithms:
   for both. The paper allows any topological order in this step; we use LowerY
   because, measured against the exact optimum, it is clearly more accurate than
   a Y-blind topological sort, so SB-GPAV is run in its most accurate form.
-* OperadicGPAV builds its block graph as in variant="default": a Q-edge may be routed
-  through one weight-0 gateway node when that needs fewer edges. This is part of
-  OperadicGPAV's own construction (SB-GPAV has no Q); in every test it left the fit unchanged.
+* Both algorithms write Stage-2 constraints as plain edges.
 
 OperadicGPAV's advantages measured this way come from the algorithm itself:
 segmenting along Q, running LowerY and the first GPAV per fiber, the Stage-2
