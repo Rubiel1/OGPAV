@@ -75,7 +75,7 @@ VARIANTS: Dict[str, Dict[str, bool]] = {
     "default": {"stage1_dfs": False, "stage2_trend": True, "gateway": "auto"},
     # For benchmarks against GPAV / SB-GPAV: same computation as "default", but
     # the configuration is locked (see OperadicGPAV docstring and utils/review.py).
-    "review": {"stage1_dfs": False, "stage2_trend": True, "gateway": "False"},
+    "review": {"stage1_dfs": False, "stage2_trend": True, "gateway": False},
     # For limited time or memory: DFS orders in both stages.
     "fast": {"stage1_dfs": True, "stage2_trend": True, "gateway": "auto"},
 }
