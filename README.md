@@ -289,7 +289,7 @@ if __name__ == "__main__":
 | Intended for | normal use | researchers comparing with GPAV / SB-GPAV | limited time or memory |
 | Stage 1 order (inside each fiber) | LowerY | LowerY | DFS approximation of LowerY |
 | Stage 2 order (block graph) | LowerY | LowerY | DFS approximation of LowerY |
-| Q-edge `i -> j` in the block graph | every max-block of `R_i` to every min-block of `R_j`, or through one weight-0 gateway node when that needs fewer edges | same as default | same as default |
+| Q-edge `i -> j` in the block graph | every max-block of `R_i` to every min-block of `R_j`, or through one weight-0 gateway node when that needs fewer edges | every max-block of `R_i` to every min-block of `R_j` | same as default |
 | Can the orders be overridden? | yes | no (locked) | yes |
 | Fits | identical to the original release in every test (see Gateway) | identical to default | may be slightly less accurate |
 
@@ -301,7 +301,7 @@ Shared by all three: input validation (empty fibers, `Y` length, repeated rows),
 
 **Gateway.** A Q-edge means every block of `R_i` lies below every block of `R_j`. With `a` maximal blocks in `R_i` and `b` minimal blocks in `R_j`, this can be written as `a * b` edges, or routed through one weight-0 node with `a + b` edges. The constraints are the same and the gateway never enters an average, but GPAV absorbs it into the first successor it processes, so the order of Stage 2 matters:
 
-- With LowerY in Stage 2 (default, review), the gateway did not change the fit in any test: 22,456 instances over many poset families, including nested lexicographic sums, Boolean lattices, very thick and very large `Q` (`gateway_exploration_2026-10-09.md`). This is an empirical observation, not a proof. All three variants use it only on Q-edges where it saves edges, `a * b > a + b`, i.e. never when `a = 1` or `b = 1` (for example a fiber with a greatest or a least element, or any chain) and not when `a = b = 2`. Elsewhere the extra node only costs time: on a very thick `Q` with compressible fibers, always using it was 5x slower.
+- With LowerY in Stage 2 (default, review), the gateway did not change the fit in any test: 22,456 instances over many poset families, including nested lexicographic sums, Boolean lattices, very thick and very large `Q` (`gateway_exploration_2026-10-09.md`). This is an empirical observation, not a proof. Default and fast variants use it only on Q-edges where it saves edges, `a * b > a + b`, i.e. never when `a = 1` or `b = 1` (for example a fiber with a greatest or a least element, or any chain) and not when `a = b = 2`. Elsewhere the extra node only costs time: on a very thick `Q` with compressible fibers, always using it was 5x slower.
 - With DFS in Stage 2 (fast), the gateway can change the fit, in either direction. Fast uses the same per-edge rule as default. Compared with fast using the gateway on every Q-edge: on the 500 instances below it changed 15 fits, all closer to the exact optimum; on 2,096 exploration instances it changed 217 fits, 114 better and 103 worse, by at most 3.3% of the total sum of squares; it was faster overall (66 s vs 83 s on the large cases, 2.2 s vs 14.6 s on a thick `Q`).
 - With a `Y`-blind order in Stage 2 it can pool incomparable blocks, so it is switched off (in every variant) when `use_trend_following_blocks=False`.
 
@@ -324,7 +324,7 @@ Fibers that GPAV cannot compress (antichain fibers under a chain `Q`, 200 points
 | `"default"` | 8.9 s, 3.5 MB peak | 31.7 s, 7.0 MB peak |
 | `"fast"` | 3.2 s, 3.5 MB peak | 5.3 s, 6.7 MB peak |
 
-Without the gateway (writing every Q-edge as `a * b` edges) default took 42 s / 84 MB and 231 s / 177 MB on the same inputs.
+Without the gateway (writing every Q-edge as `a * b` edges) default took 42 s / 84 MB and 231 s / 177 MB on the same inputs. Note that review mode does not uses the gateway.
 
 On compressible data the difference is small: 8 fibers of 300 points under a tree `Q` (N = 2,400) took 4.2 s with default and 2.8 s with fast.
 
@@ -337,7 +337,7 @@ On compressible data the difference is small: 8 fibers of 300 points under a tre
 - the same DAG builder, GPAV core and LowerY implementation;
 - first order: LowerY over all N elements of the lexicographic sum for SB-GPAV (Algorithm 4, step 1), LowerY per fiber for OperadicGPAV;
 - second order (block graph): LowerY for both. The SB paper allows any topological order in this step; LowerY is the more accurate choice, so SB-GPAV is run in its best form.
-- OperadicGPAV may route a Q-edge through a gateway node (as in default). This is part of OperadicGPAV's own construction of the block graph, which SB-GPAV does not have; in every test it left OperadicGPAV's fit unchanged.
+- OperadicGPAV writes every Q-edge as plain edges.
 
 ```python
 from utils.review import compare_review
