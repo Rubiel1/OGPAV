@@ -58,7 +58,7 @@ BlockId = int
 #                    True = through one weight-0 node (a + b edges, one node).
 #                    "auto" = the node only when it saves edges, a*b > a + b, i.e.
 #                    (a-1)(b-1) >= 2: never when a = 1 or b = 1, nor when a = b = 2.
-#                    All three variants use "auto". With LowerY in Stage 2
+#                    Fast and default variants use "auto", review uses False. With LowerY in Stage 2
 #                    (default, review) the node has not changed a fit in any test
 #                    (22,456 instances; see gateway_exploration_2026-10-09.md), but
 #                    this is an empirical observation, not a proof. With DFS (fast)
@@ -73,7 +73,7 @@ BlockId = int
 VARIANTS: Dict[str, Dict[str, bool]] = {
     # For normal use: the paper's orderings (fits = main in every test).
     "default": {"stage1_dfs": False, "stage2_trend": True, "gateway": "auto"},
-    # For benchmarks against GPAV / SB-GPAV: same computation as "default", but
+    # For benchmarks against GPAV / SB-GPAV: no gateway, but
     # the configuration is locked (see OperadicGPAV docstring and utils/review.py).
     "review": {"stage1_dfs": False, "stage2_trend": True, "gateway": False},
     # For limited time or memory: DFS orders in both stages.
@@ -356,8 +356,8 @@ def OperadicGPAV(
         cost when fibers barely compress. LowerY is quadratic in the number of
         blocks; for very large inputs prefer "fast".
 
-        "review" -- for benchmarks against GPAV / SB-GPAV. Computes exactly what
-        "default" computes, but locks the configuration: neither order can be
+        "review" -- for benchmarks against GPAV / SB-GPAV. Computes what
+        "default" computes but do not uses gateway, but locks the configuration: neither order can be
         overridden and segment_topo_orders is rejected. Use
         utils.review.sb_gpav_review to run SB-GPAV under the same rules (LowerY
         on the whole lexicographic sum, then LowerY on its block graph).
