@@ -16,6 +16,7 @@ import pickle
 
 from .gpav import gpav_seg
 from .sb_gpav import _get_block_extrema
+from .adjacency_memory import build_profile, empty_group, graph_counts, update_group
 
 def handle_q_no_edges(
     m: int,
@@ -28,8 +29,11 @@ def handle_q_no_edges(
     use_trend_following_first: bool,
     assume_component_wise: bool,
     max_workers: int,
-    verbose: bool
-) -> np.ndarray:
+    verbose: bool,
+    sparse_data: bool = False,
+    weights: Optional[np.ndarray] = None,
+    return_adjacency_memory: bool = False,
+) -> Any:
     """
     Fast-path for when the outer poset Q has absolutely no edges (or is m=1).
     Because the fibers do not interact globally, Stage 2 is totally unnecessary.
@@ -41,6 +45,14 @@ def handle_q_no_edges(
     import tempfile
     
     u_final = np.zeros_like(Y, dtype=float)
+    adjacency_groups = {
+        "local_hasse": empty_group(),
+        "local_block": empty_group(),
+        "outer_hasse": empty_group(),
+        "global_block": empty_group(),
+    }
+    update_group(adjacency_groups["outer_hasse"], {"nodes": m, "edges": 0})
+    update_group(adjacency_groups["global_block"], {"nodes": 0, "edges": 0})
     
     if verbose:
         print(f"Border Case Detected: Q has no edges. Skipping Stage 2. Processing {m} independent fibers...")
@@ -62,7 +74,7 @@ def handle_q_no_edges(
                 return default_comparator
                 
             if f_list is not None:
-                return f_list[i] if i < len(f_list) else None
+                return f_list[i]  # length checked in OperadicGPAV: one entry per fiber
             else:
                 return f_global
 
@@ -97,9 +109,12 @@ def handle_q_no_edges(
             for i, X_i, idxs in inputs:
                 f_i = _get_comparator(i)
                 custom_order_i = segment_topo_orders[i] if segment_topo_orders and i < len(segment_topo_orders) else None
-                _process_fiber_task(
-                    i, X_i, idxs, Y, f_i, temp_dir_path, use_trend_following_first, custom_order_i, assume_component_wise
+                _, _, _, _, fiber_memory = _process_fiber_task(
+                    i, X_i, list(range(len(idxs))), Y[idxs], f_i, temp_dir_path, use_trend_following_first, custom_order_i, assume_component_wise, sparse_data,
+                    None if weights is None else weights[idxs]
                 )
+                for graph_name, counts in fiber_memory.items():
+                    update_group(adjacency_groups[graph_name], counts)
                 
                 # Immediately map results back
                 p_path = os.path.join(temp_dir_path, f"fiber_{i}.pkl")
@@ -125,7 +140,8 @@ def handle_q_no_edges(
                     custom_order_i = segment_topo_orders[i] if segment_topo_orders and i < len(segment_topo_orders) else None
                     fut = executor.submit(
                         _process_fiber_task,
-                        i, X_i, idxs, Y, f_i, temp_dir_path, use_trend_following_first, custom_order_i, assume_component_wise
+                        i, X_i, list(range(len(idxs))), Y[idxs], f_i, temp_dir_path, use_trend_following_first, custom_order_i, assume_component_wise, sparse_data,
+                        None if weights is None else weights[idxs]
                     )
                     futures[fut] = (i, idxs)
                     
@@ -133,7 +149,9 @@ def handle_q_no_edges(
                     done, _ = concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_COMPLETED)
                     for fut in done:
                         i, idxs = futures.pop(fut)
-                        fut.result() # trigger exceptions if any
+                        _, _, _, _, fiber_memory = fut.result()  # trigger exceptions if any
+                        for graph_name, counts in fiber_memory.items():
+                            update_group(adjacency_groups[graph_name], counts)
                         
                         # Immediately map results back for completed fiber
                         p_path = os.path.join(temp_dir_path, f"fiber_{i}.pkl")
@@ -152,12 +170,15 @@ def handle_q_no_edges(
                             custom_order_i = segment_topo_orders[ni] if segment_topo_orders and ni < len(segment_topo_orders) else None
                             new_fut = executor.submit(
                                 _process_fiber_task,
-                                ni, nX_i, nidxs, Y, f_i, temp_dir_path, use_trend_following_first, custom_order_i, assume_component_wise
+                                ni, nX_i, list(range(len(nidxs))), Y[nidxs], f_i, temp_dir_path, use_trend_following_first, custom_order_i, assume_component_wise, sparse_data,
+                                None if weights is None else weights[nidxs]
                             )
                             futures[new_fut] = (ni, nidxs)
                         except StopIteration:
                             pass
 
+        if return_adjacency_memory:
+            return u_final, build_profile(adjacency_groups)
         return u_final
 
     finally:
@@ -168,8 +189,9 @@ def package_local_antichain(
     X_i: Any,
     local_Y_indices: List[int],
     Y_snapshot: np.ndarray,
-    temp_dir: str
-) -> tuple[int, int, list[int], list[int]]:
+    temp_dir: str,
+    W_snapshot: Optional[np.ndarray] = None
+) -> tuple[int, int, list[int], list[int], Dict[str, Dict[str, int]]]:
     """
     Fast-path for a local fiber that is definitively an antichain (disjoint points).
     Bypasses GPAV evaluation, returning every node as an individual 1-size block.
@@ -183,7 +205,7 @@ def package_local_antichain(
         # A 1-element block
         b = {
             'value': val,
-            'weight': 1.0, # single point weight
+            'weight': 1.0 if W_snapshot is None else float(W_snapshot[global_idx]),
             'labels': [local_idx],
             'elements': [local_idx]
         }
@@ -200,4 +222,14 @@ def package_local_antichain(
     with open(p_path, "wb") as f_out:
         pickle.dump((blocks, G_loc), f_out)
         
-    return (i, n_i, mins, maxs)
+    counts = graph_counts(G_loc)
+    return (
+        i,
+        n_i,
+        mins,
+        maxs,
+        {
+            "local_hasse": counts,
+            "local_block": counts,
+        },
+    )
