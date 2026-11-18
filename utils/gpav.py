@@ -68,7 +68,8 @@ def gpav_seg(
     *,
     verbose: bool = False,
     name: str = "GPAV",
-    indent: str = ""
+    indent: str = "",
+    progress=None,
 ) -> Tuple[np.ndarray, List[Dict], np.ndarray]:
     """
     Generalized Pool Adjacent Violators over a partial order from paper
@@ -159,7 +160,11 @@ def gpav_seg(
     rev_pred: Dict[int, set] = {}  # inverse index: head -> set of heads that list it in 'children_k'
 
     # Sweep
+    _tk = progress.ticker("gpav_seg sweep (nodes)", len(topo)) if progress is not None else None
+    _ts = progress.start(f"gpav_seg sweep: n={n} nodes") if progress is not None else None
     for k in topo: # change j to k
+        if _tk is not None:
+            _tk.step(info=blocks)
         # Create singleton block for j
         blocks[k] = {
             'elements': [k],
@@ -267,6 +272,8 @@ def gpav_seg(
     block_list: List[Dict] = []
     elem_to_block = np.empty(n, dtype=int)
 
+    if progress is not None:
+        progress.end(f"gpav_seg sweep: n={n} -> {len(blocks)} blocks", _ts)
     for head, b in blocks.items(): # b are the elements of the dictionary; head, the index
         b_id = len(block_list)
         block_list.append({

@@ -10,7 +10,8 @@ import numpy as np
 def _build_dag_incrementally(
     indices: Sequence[int],
     precedes_func: Callable[[int, int], bool],
-    assume_component_wise: bool = False
+    assume_component_wise: bool = False,
+    progress=None,
 ) -> nx.DiGraph:
     """
     Constructs a DAG on `indices` by adding only non-redundant edges.
@@ -62,7 +63,11 @@ def _build_dag_incrementally(
         G.add_nodes_from(indices)
         
         N_subset = len(indices)
+        _tp = progress.start(f"hasse pair loop: {N_subset} x {N_subset} ordered pairs") if progress is not None else None
+        _tk = progress.ticker("hasse pair loop (rows)", N_subset) if progress is not None else None
         for idx_i in range(N_subset):
+            if _tk is not None:
+                _tk.step(idx_i)
             for idx_j in range(N_subset):
                 if idx_i == idx_j:
                     continue
@@ -71,8 +76,14 @@ def _build_dag_incrementally(
                 if precedes_func(i, j):
                     G.add_edge(i, j)
                     
+        if progress is not None:
+            progress.end(f"hasse pair loop: {G.number_of_edges()} comparable pairs", _tp)
+            _tr = progress.start(f"transitive_reduction: nodes={G.number_of_nodes()} edges={G.number_of_edges()}")
         try:
-            return nx.transitive_reduction(G)
+            TR = nx.transitive_reduction(G)
+            if progress is not None:
+                progress.end(f"transitive_reduction: edges {G.number_of_edges()} -> {TR.number_of_edges()}", _tr)
+            return TR
         except nx.NetworkXError:
             # Diagnose only on failure.  transitive_reduction refuses a cyclic graph,
             # and the only way this loop can produce a cycle is a relation that is not
